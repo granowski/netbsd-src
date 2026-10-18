@@ -36,6 +36,7 @@ options 	CPU_ARM7TDMI		# Series 5mx/Revo/Revo+
 
 # File systems
 file-system	FFS		# UFS
+file-system	APFS		# Apple File System
 #file-system	EXT2FS		# second extended file system (linux)
 file-system	MFS		# memory file system
 file-system	NFS		# Network File System client

@@ -83,6 +83,7 @@ options 	DKWEDGE_METHOD_GPT	# Supports GPT partitions as wedges
 
 # File systems
 file-system	FFS		# UFS
+file-system	APFS		# Apple File System
 file-system	MFS		# memory file system
 file-system	NFS		# Network File System client
 file-system	TMPFS		# Efficient memory file-system

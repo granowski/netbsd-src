@@ -54,6 +54,7 @@ options 	S3C2XX0_XTAL_CLK=12000000     # 12MHz Xtal
 # File systems
 
 file-system	FFS		# UFS
+file-system	APFS		# Apple File System
 #file-system	LFS		# log-structured file system
 #file-system	MFS		# memory file system
 file-system	NFS		# Network file system

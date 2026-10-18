@@ -276,8 +276,6 @@ struct apfsnode {
 #define VTOA(vp) ((struct apfsnode *)(vp)->v_data)
 
 /* VFS Operations */
-#define MOUNT_APFS "apfs"
-
 VFS_PROTOS(apfs);
 
 /* B-Tree Helpers */

@@ -99,6 +99,7 @@
 #define MOUNT_RUMPFS	"rumpfs"	/* rump virtual file system */
 #define MOUNT_V7FS	"v7fs"		/* 7th Edition of Unix Filesystem */
 #define MOUNT_AUTOFS	"autofs"	/* Automounter Filesystem */
+#define MOUNT_APFS	"apfs"		/* Apple File System */
 
 /*
  * Sysctl CTL_VFS definitions.

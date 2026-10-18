@@ -100,6 +100,7 @@ options 	COMPAT_NETBSD32	# allow running arm (e.g. non-earm) binaries
 
 # File systems
 file-system 	FFS		# UFS
+file-system	APFS		# Apple File System
 #file-system 	EXT2FS		# second extended file system (linux)
 #file-system 	LFS		# log-structured file system
 #file-system 	MFS		# memory file system

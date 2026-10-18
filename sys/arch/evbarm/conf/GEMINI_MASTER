@@ -25,6 +25,7 @@ options 	GEMINI_MASTER
 # File systems
 
 file-system	FFS		# UFS
+file-system	APFS		# Apple File System
 #file-system	LFS		# log-structured file system
 file-system	MFS		# memory file system
 file-system	NFS		# Network file system
