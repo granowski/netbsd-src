@@ -57,6 +57,9 @@ apfs_vop_lookup(void *v)
 	struct vnode *dvp = ap->a_dvp;
 	struct componentname *cnp = ap->a_cnp;
 	
+	(void)dvp;
+	(void)cnp;
+
 	/* TODO: Search Volume Root Tree for DREC record */
 	
 	return ENOENT;
@@ -70,6 +73,10 @@ apfs_vop_create(void *v)
 	struct componentname *cnp = ap->a_cnp;
 	struct vattr *vap = ap->a_vap;
 	
+	(void)dvp;
+	(void)cnp;
+	(void)vap;
+
 	/* TODO: 
 	 * 1. Allocate new OID.
 	 * 2. Create inode record.
@@ -106,8 +113,8 @@ apfs_vop_access(void *v)
 	struct vnode *vp = ap->a_vp;
 	struct apfsnode *apnode = VTOA(vp);
 
-	return vaccess(vp->v_type, apnode->a_ino.mode, apnode->a_ino.owner,
-	    apnode->a_ino.group, ap->a_mode, ap->a_cred);
+	return genfs_can_access(vp, ap->a_cred, apnode->a_ino.owner,
+	    apnode->a_ino.group, apnode->a_ino.mode, NULL, ap->a_accmode);
 }
 
 int
@@ -150,6 +157,9 @@ apfs_vop_setattr(void *v)
 	struct vattr *vap = ap->a_vap;
 	struct apfsnode *apnode = VTOA(vp);
 	
+	(void)vap;
+	(void)apnode;
+
 	/* TODO: Update inode record and COW Root Tree */
 	
 	return EOPNOTSUPP;
@@ -161,6 +171,9 @@ apfs_vop_read(void *v)
 	struct vop_read_args *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct uio *uio = ap->a_uio;
+
+	(void)vp;
+	(void)uio;
 
 	/* TODO: Implement extent mapping and bread() */
 	
@@ -175,6 +188,9 @@ apfs_vop_write(void *v)
 	struct uio *uio = ap->a_uio;
 	struct apfsnode *apnode = VTOA(vp);
 	
+	(void)uio;
+	(void)apnode;
+
 	/* TODO:
 	 * 1. Allocate blocks for data (apfs_alloc_block).
 	 * 2. Create EXTENT records.
