@@ -56,13 +56,35 @@ apfs_vop_lookup(void *v)
 	struct vop_lookup_v2_args *ap = v;
 	struct vnode *dvp = ap->a_dvp;
 	struct componentname *cnp = ap->a_cnp;
-	
-	(void)dvp;
-	(void)cnp;
+	struct apfsnode *dnode = VTOA(dvp);
+	j_drec_key_t *key;
+	j_drec_val_t val;
+	int error;
 
-	/* TODO: Search Volume Root Tree for DREC record */
-	
-	return ENOENT;
+	if (cnp->cn_nameptr[0] == '.') {
+		if (cnp->cn_namelen == 1) {
+			*ap->a_vpp = dvp;
+			vref(dvp);
+			return 0;
+		}
+		if (cnp->cn_namelen == 2 && cnp->cn_nameptr[1] == '.') {
+			return apfs_vget(dvp->v_mount, dnode->a_ino.parent_id, LK_EXCLUSIVE, ap->a_vpp);
+		}
+	}
+
+	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen, KM_SLEEP);
+	key->parent_id = ((uint64_t)dnode->a_oid << 4) | APFS_TYPE_DIR_REC;
+	key->name_len = cnp->cn_namelen;
+	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
+
+	error = apfs_btree_search(dnode->a_amp, dnode->a_amp->am_sb.apfs_root_tree_oid, key, &val, NULL);
+	kmem_free(key, sizeof(*key) + cnp->cn_namelen);
+
+	if (error == 0) {
+		return apfs_vget(dvp->v_mount, val.file_id, LK_EXCLUSIVE, ap->a_vpp);
+	}
+
+	return error;
 }
 
 int
@@ -171,13 +193,54 @@ apfs_vop_read(void *v)
 	struct vop_read_args *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct uio *uio = ap->a_uio;
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = apnode->a_amp;
+	j_extent_key_t key, found_key;
+	j_phys_ext_val_t val;
+	struct buf *bp;
+	int error = 0;
 
-	(void)vp;
-	(void)uio;
+	if (vp->v_type != VREG)
+		return EISDIR;
 
-	/* TODO: Implement extent mapping and bread() */
-	
-	return EOPNOTSUPP;
+	while (uio->uio_resid > 0 && uio->uio_offset < apnode->a_ino.uncompressed_size) {
+		key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT;
+		key.logical_addr = uio->uio_offset;
+
+		error = apfs_btree_search(amp, amp->am_sb.apfs_root_tree_oid, &key, &val, &found_key);
+		if (error) {
+			/* Hole */
+			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
+			error = uiomove_zeros(n, uio);
+			if (error) break;
+			continue;
+		}
+
+		uint64_t extent_len = val.len_and_flags & EXTENT_LEN_MASK;
+		if (uio->uio_offset < found_key.logical_addr || uio->uio_offset >= found_key.logical_addr + extent_len) {
+			/* Offset not covered by this extent, must be a hole */
+			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
+			error = uiomove_zeros(n, uio);
+			if (error) break;
+			continue;
+		}
+
+		/* Read from extent */
+		uint64_t block_off = uio->uio_offset - found_key.logical_addr;
+		uint64_t phys_block = val.phys_addr + (block_off / amp->am_block_size);
+		size_t off_in_block = block_off % amp->am_block_size;
+		size_t n = MIN(uio->uio_resid, amp->am_block_size - off_in_block);
+		n = MIN(n, found_key.logical_addr + extent_len - uio->uio_offset);
+
+		error = bread(amp->am_devvp, phys_block, amp->am_block_size, 0, &bp);
+		if (error) break;
+
+		error = uiomove((uint8_t *)bp->b_data + off_in_block, n, uio);
+		brelse(bp, 0);
+		if (error) break;
+	}
+
+	return error;
 }
 
 int
@@ -229,7 +292,44 @@ apfs_vop_rmdir(void *v)
 int
 apfs_vop_readdir(void *v)
 {
-	return EOPNOTSUPP;
+	struct vop_readdir_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct uio *uio = ap->a_uio;
+	struct apfsnode *apnode = VTOA(vp);
+	struct dirent de;
+	int error = 0;
+
+	if (vp->v_type != VDIR)
+		return ENOTDIR;
+
+	while (uio->uio_resid > 0) {
+		memset(&de, 0, sizeof(de));
+		if (uio->uio_offset == 0) {
+			de.d_fileno = apnode->a_oid;
+			de.d_type = DT_DIR;
+			de.d_namlen = 1;
+			strlcpy(de.d_name, ".", sizeof(de.d_name));
+		} else if (uio->uio_offset == 1) {
+			de.d_fileno = apnode->a_ino.parent_id;
+			de.d_type = DT_DIR;
+			de.d_namlen = 2;
+			strlcpy(de.d_name, "..", sizeof(de.d_name));
+		} else {
+			break;
+		}
+
+		de.d_reclen = _DIRENT_SIZE(&de);
+		if (uio->uio_resid < de.d_reclen)
+			break;
+
+		error = uiomove(&de, de.d_reclen, uio);
+		if (error)
+			break;
+
+		uio->uio_offset++;
+	}
+
+	return error;
 }
 
 int

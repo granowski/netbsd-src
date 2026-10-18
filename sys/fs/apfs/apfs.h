@@ -167,17 +167,24 @@ typedef struct btree_node_phys {
 #define BTNODE_FIXED_KV_SIZE  0x0004
 
 /* File-System Records */
-#define APFS_TYPE_INODE     0x1000
-#define APFS_TYPE_DIR_REC   0x3000
-#define APFS_TYPE_EXTENT    0x8000
+#define APFS_TYPE_ANY       0x0
+#define APFS_TYPE_INODE     0x1
+#define APFS_TYPE_DIR_REC   0x2
+#define APFS_TYPE_EXTENT    0x8
 
 typedef struct j_key {
     uint64_t obj_id_and_type;
+    uint8_t  data[0];
 } j_key_t;
 
-#define OBJ_ID_MASK   0x0fffffffffffffffULL
-#define OBJ_TYPE_MASK 0xf000000000000000ULL
-#define OBJ_TYPE_SHIFT 60
+typedef struct j_extent_key {
+    uint64_t obj_id_and_type;
+    uint64_t logical_addr;
+} j_extent_key_t;
+
+#define OBJ_ID_MASK   0xfffffffffffffff0ULL
+#define OBJ_TYPE_MASK 0x000000000000000fULL
+#define OBJ_TYPE_SHIFT 0
 
 typedef struct j_inode_val {
     uint64_t parent_id;

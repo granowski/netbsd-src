@@ -13,6 +13,7 @@
 #include <sys/kmem.h>
 #include <sys/module.h>
 #include <sys/fcntl.h>
+#include <uvm/uvm_extern.h>
 
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/specfs/specdev.h>
@@ -141,6 +142,35 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 	brelse(bp, 0);
 
+	/* 5. Find Volume Superblock */
+	error = ENOENT;
+	for (int i = 0; i < nx->nx_max_file_systems; i++) {
+		if (nx->nx_fs_oid[i] != 0) {
+			apfs_paddr_t sb_paddr;
+			/* Look up volume superblock in container OMap */
+			error = apfs_omap_lookup(amp, nx->nx_fs_oid[i], nx->nx_next_xid - 1, &sb_paddr);
+			if (error == 0) {
+				error = bread(devvp, sb_paddr, amp->am_block_size, 0, &bp);
+				if (error == 0) {
+					apfs_superblock_t *vsb = (apfs_superblock_t *)bp->b_data;
+					if (vsb->apfs_magic == APFS_MAGIC) {
+						memcpy(&amp->am_sb, vsb, sizeof(*vsb));
+						brelse(bp, 0);
+						error = 0;
+						break;
+					}
+					brelse(bp, 0);
+				}
+			}
+		}
+	}
+
+	if (error) {
+		mutex_destroy(&amp->am_lock);
+		kmem_free(amp, sizeof(*amp));
+		goto error_close;
+	}
+
 	mp->mnt_data = amp;
 	mp->mnt_stat.f_namemax = 255;
 	mp->mnt_flag |= MNT_LOCAL;
@@ -202,8 +232,8 @@ apfs_unmount(struct mount *mp, int mntflags)
 int
 apfs_root(struct mount *mp, int lktype, struct vnode **vpp)
 {
-	/* TODO: Implement root vnode retrieval via apfs_vget */
-	return EOPNOTSUPP;
+	/* Root directory OID in APFS is typically 1 */
+	return VFS_VGET(mp, 1, lktype, vpp);
 }
 
 int
@@ -215,7 +245,14 @@ apfs_statvfs(struct mount *mp, struct statvfs *sbp)
 	sbp->f_frsize = amp->am_block_size;
 	sbp->f_iosize = amp->am_block_size;
 	sbp->f_blocks = amp->am_nx.nx_block_count;
-	/* ... fill in more fields from nx and apfs superblocks ... */
+	sbp->f_bfree = amp->am_sb.apfs_fs_reserve_block_count; /* Simplified */
+	sbp->f_bavail = amp->am_sb.apfs_fs_reserve_block_count;
+	sbp->f_bresvd = 0;
+	sbp->f_files = amp->am_sb.apfs_num_files + amp->am_sb.apfs_num_directories;
+	sbp->f_ffree = 0;
+	sbp->f_favail = 0;
+	sbp->f_fresvd = 0;
+	copystatvfs_info(sbp, mp);
 
 	return 0;
 }
@@ -229,8 +266,57 @@ apfs_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
 int
 apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 {
-	/* TODO: Implement inode lookup in APFS B-Tree */
-	return EOPNOTSUPP;
+	struct apfsmount *amp = mp->mnt_data;
+	struct apfsnode *apnode;
+	struct vnode *vp;
+	j_key_t key;
+	j_inode_val_t val;
+	int error;
+
+	/* 1. Check vnode cache */
+	error = vcache_get(mp, &ino, sizeof(ino), &vp);
+	if (error)
+		return error;
+
+	vn_lock(vp, lktype | LK_RETRY);
+	if (vp->v_data != NULL) {
+		*vpp = vp;
+		return 0;
+	}
+
+	/* 2. Load inode from Root Tree */
+	key.obj_id_and_type = ((uint64_t)ino << 4) | APFS_TYPE_INODE;
+	error = apfs_btree_search(amp, amp->am_sb.apfs_root_tree_oid, &key, &val, NULL);
+	if (error) {
+		vgone(vp);
+		return error;
+	}
+
+	/* 3. Initialize apfsnode */
+	apnode = kmem_zalloc(sizeof(*apnode), KM_SLEEP);
+	apnode->a_amp = amp;
+	apnode->a_vnode = vp;
+	apnode->a_oid = ino;
+	memcpy(&apnode->a_ino, &val, sizeof(val));
+
+	vp->v_data = apnode;
+	
+	switch (apnode->a_ino.mode & S_IFMT) {
+	case S_IFDIR: vp->v_type = VDIR; break;
+	case S_IFREG: vp->v_type = VREG; break;
+	case S_IFLNK: vp->v_type = VLNK; break;
+	case S_IFBLK: vp->v_type = VBLK; break;
+	case S_IFCHR: vp->v_type = VCHR; break;
+	case S_IFIFO: vp->v_type = VFIFO; break;
+	case S_IFSOCK: vp->v_type = VSOCK; break;
+	default: vp->v_type = VNON; break;
+	}
+
+	genfs_node_init(vp, &apfs_vnodeop_p);
+	uvm_vnodeops.vop_put = genfs_putpages; /* Basic paging support */
+
+	*vpp = vp;
+	return 0;
 }
 
 void
