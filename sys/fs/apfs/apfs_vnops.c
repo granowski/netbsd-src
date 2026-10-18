@@ -9,6 +9,8 @@
 #include <sys/dirent.h>
 #include <sys/kmem.h>
 
+#include <miscfs/genfs/genfs.h>
+
 #include <fs/apfs/apfs.h>
 
 /* Global vnode operation descriptors */

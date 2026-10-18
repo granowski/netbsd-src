@@ -11,6 +11,10 @@
 #include <sys/device.h>
 #include <sys/conf.h>
 #include <sys/kmem.h>
+#include <sys/module.h>
+
+#include <miscfs/genfs/genfs.h>
+#include <miscfs/specfs/specdev.h>
 
 #include <fs/apfs/apfs.h>
 
@@ -43,7 +47,7 @@ struct vfsops apfs_vfsops = {
 };
 
 static int
-apfs_modcmd(header_t modcmd, void *arg)
+apfs_modcmd(modcmd_t modcmd, void *arg)
 {
 	int error = 0;
 
@@ -66,6 +70,7 @@ int
 apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 {
 	struct lwp *l = curlwp;
+	struct apfs_args *args = data;
 	struct vnode *devvp;
 	struct apfsmount *amp;
 	struct buf *bp;
@@ -73,8 +78,13 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	int error;
 	dev_t dev;
 
+	if (args == NULL)
+		return EINVAL;
+	if (*data_len < sizeof *args)
+		return EINVAL;
+
 	/* 1. Get the device vnode */
-	error = namei_simple_kernel(path, NSM_FOLLOW_NOEMULROOT, &devvp);
+	error = namei_simple_user(args->fspec, NSM_FOLLOW_NOEMULROOT, &devvp);
 	if (error)
 		return error;
 
@@ -117,8 +127,8 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	mp->mnt_flag |= MNT_LOCAL;
 	vfs_getnewfsid(mp);
 
-	error = set_statvfs_info(path, UIO_USERSPACE, "apfs", UIO_SYSSPACE,
-	    mp->mnt_stat.f_mntonname, sizeof(mp->mnt_stat.f_mntonname), mp, l);
+	error = set_statvfs_info(path, UIO_USERSPACE, args->fspec, UIO_USERSPACE,
+	    mp->mnt_op->vfs_name, mp, l);
 
 	return error;
 }

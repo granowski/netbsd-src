@@ -37,7 +37,7 @@ typedef struct obj_phys {
 #define OBJ_FS                      0x0000000d
 
 /* Container Superblock */
-#define NX_MAGIC 'BSXN'
+#define NX_MAGIC 0x4253584e
 #define NX_MAX_FILE_SYSTEMS 100
 
 typedef struct nx_superblock {
@@ -70,7 +70,7 @@ typedef struct nx_superblock {
 } nx_superblock_t;
 
 /* Volume Superblock */
-#define APFS_MAGIC 'BSPA'
+#define APFS_MAGIC 0x42535041
 
 typedef struct apfs_superblock {
     obj_phys_t apfs_o;
