@@ -1291,6 +1291,7 @@ MKSTATICPIE?=	no
 #
 _MKVARS.yes= \
 	MKADOSFS \
+	MKAPFS \
 	MKARGON2 \
 	MKATF \
 	MKAUDIO \
@@ -1382,6 +1383,7 @@ _MKVARS.yes= \
 # features accordingly.
 #
 MKADOSFS.m68000?=	no
+MKAPFS.m68000?=		no
 MKAUDIO.m68000?=	no
 MKAUTOFS.m68000?=	no
 MKBIND.m68000?=		no

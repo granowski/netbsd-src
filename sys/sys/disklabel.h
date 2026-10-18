@@ -387,7 +387,8 @@ x(MINIXFS3,29, "MINIX FSv3", NULL,   NULL)    /* MINIX file system v3 */ \
 x(VMKCORE, 30, "VMware vmkcore", NULL, NULL)  /* VMware vmkcore */ \
 x(VMFS,    31, "VMware VMFS", NULL,  NULL)    /* VMware VMFS */ \
 x(VMWRESV, 32, "VMware Reserved", NULL, NULL) /* VMware reserved */ \
-x(ZFS,     33, "ZFS",        NULL,   "zfs")   /* ZFS */
+x(ZFS,     33, "ZFS",        NULL,   "zfs")   /* ZFS */ \
+x(APFS,    34, "APFS",       NULL,   "apfs")   /* Apple File System */
 
 
 #ifndef _LOCORE

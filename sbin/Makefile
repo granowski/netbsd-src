@@ -64,6 +64,10 @@ SUBDIR+= mount_filecore
 SUBDIR+= mount_hfs
 .endif
 
+.if (${MKAPFS} != "no")
+SUBDIR+= mount_apfs
+.endif
+
 .if (${MKKERNFS} != "no")
 SUBDIR+= mount_kernfs
 .endif

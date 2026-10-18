@@ -1,0 +1,43 @@
+.\"	$NetBSD$
+.\"
+.Dd October 18, 2026
+.Dt MOUNT_APFS 8
+.Os
+.Sh NAME
+.Nm mount_apfs
+.Nd mount an Apple File System
+.Sh SYNOPSIS
+.Nm
+.Op Fl o Ar options
+.Ar special
+.Ar node
+.Sh DESCRIPTION
+The
+.Nm
+utility attaches an Apple File System (APFS) on
+.Ar special
+to the file system tree at the point
+.Ar node .
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl o
+Options are specified with a
+.Fl o
+flag followed by a comma-separated string of options.
+See the
+.Xr mount 8
+man page for possible options and their meanings.
+.El
+.Sh SEE ALSO
+.Xr mount 2 ,
+.Xr mount 8
+.Sh HISTORY
+The
+.Nm
+utility first appeared in
+.Nx 11.0 .
+.Sh AUTHORS
+The
+.Nx
+implementation of APFS was written by Junie.
