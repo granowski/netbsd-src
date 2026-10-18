@@ -75,7 +75,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	struct apfsmount *amp;
 	struct buf *bp;
 	nx_superblock_t *nx;
-	int error;
+	int error, mode;
 	dev_t dev;
 
 	if (args == NULL)
@@ -83,40 +83,58 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	if (*data_len < sizeof *args)
 		return EINVAL;
 
+	if (mp->mnt_flag & MNT_UPDATE)
+		return EOPNOTSUPP;
+
 	/* 1. Get the device vnode */
 	error = namei_simple_user(args->fspec, NSM_FOLLOW_NOEMULROOT, &devvp);
 	if (error)
 		return error;
 
 	if (devvp->v_type != VBLK) {
-		vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-		VOP_UNLOCK(devvp);
 		vrele(devvp);
 		return ENOTBLK;
 	}
 
 	dev = devvp->v_rdev;
+	if (bdevsw_lookup(dev) == NULL) {
+		vrele(devvp);
+		return ENXIO;
+	}
 
-	/* 2. Read Container Superblock (Block 0) */
-	error = bread(devvp, 0, 4096, 0, &bp);
+	/* 2. Open the device */
+	mode = FREAD;
+	if ((mp->mnt_flag & MNT_RDONLY) == 0)
+		mode |= FWRITE;
+	
+	vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
+	error = VOP_OPEN(devvp, mode, l->l_cred);
+	VOP_UNLOCK(devvp);
 	if (error) {
 		vrele(devvp);
 		return error;
 	}
 
+	/* 3. Read Container Superblock (Block 0) */
+	error = bread(devvp, 0, 4096, 0, &bp);
+	if (error) {
+		goto error_close;
+	}
+
 	nx = (nx_superblock_t *)bp->b_data;
 	if (nx->nx_magic != NX_MAGIC) {
 		brelse(bp, 0);
-		vrele(devvp);
-		return EINVAL;
+		error = EINVAL;
+		goto error_close;
 	}
 
-	/* 3. Allocate and initialize apfsmount */
+	/* 4. Allocate and initialize apfsmount */
 	amp = kmem_zalloc(sizeof(*amp), KM_SLEEP);
 	amp->am_mountp = mp;
 	amp->am_dev = dev;
 	amp->am_devvp = devvp;
 	amp->am_block_size = nx->nx_block_size;
+	if (amp->am_block_size == 0) amp->am_block_size = 4096;
 	memcpy(&amp->am_nx, nx, sizeof(*nx));
 	mutex_init(&amp->am_lock, MUTEX_DEFAULT, IPL_NONE);
 
@@ -125,11 +143,25 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	mp->mnt_data = amp;
 	mp->mnt_stat.f_namemax = 255;
 	mp->mnt_flag |= MNT_LOCAL;
+	mp->mnt_flag |= MNT_RDONLY; /* Force Read-Only for now */
 	vfs_getnewfsid(mp);
 
 	error = set_statvfs_info(path, UIO_USERSPACE, args->fspec, UIO_USERSPACE,
 	    mp->mnt_op->vfs_name, mp, l);
+	if (error) {
+		mutex_destroy(&amp->am_lock);
+		kmem_free(amp, sizeof(*amp));
+		mp->mnt_data = NULL;
+		goto error_close;
+	}
 
+	return 0;
+
+error_close:
+	vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
+	VOP_CLOSE(devvp, mode, l->l_cred);
+	VOP_UNLOCK(devvp);
+	vrele(devvp);
 	return error;
 }
 
@@ -143,6 +175,7 @@ int
 apfs_unmount(struct mount *mp, int mntflags)
 {
 	struct apfsmount *amp = mp->mnt_data;
+	struct lwp *l = curlwp;
 	int error, flags = 0;
 
 	if (mntflags & MNT_FORCE)
@@ -151,6 +184,10 @@ apfs_unmount(struct mount *mp, int mntflags)
 	error = vflush(mp, NULLVP, flags);
 	if (error)
 		return error;
+
+	vn_lock(amp->am_devvp, LK_EXCLUSIVE | LK_RETRY);
+	VOP_CLOSE(amp->am_devvp, (mp->mnt_flag & MNT_RDONLY) ? FREAD : FREAD|FWRITE, l->l_cred);
+	VOP_UNLOCK(amp->am_devvp);
 
 	vrele(amp->am_devvp);
 	mutex_destroy(&amp->am_lock);

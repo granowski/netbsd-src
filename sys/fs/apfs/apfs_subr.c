@@ -54,10 +54,16 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
     int error;
 
     /* 1. Resolve tree root OID to physical address */
-    error = apfs_omap_lookup(amp, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
-    if (error) {
-        /* Fallback for system objects not in OMap or during bootstrap */
-        paddr = tree_oid; /* Simplified for now */
+    if (tree_oid == amp->am_nx.nx_omap_oid || 
+        (amp->am_sb.apfs_omap_oid != 0 && tree_oid == amp->am_sb.apfs_omap_oid)) {
+        /* Bootstrap: OMap tree root is the OID itself for now */
+        paddr = tree_oid; 
+    } else {
+        error = apfs_omap_lookup(amp, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
+        if (error) {
+            /* Fallback for system objects not in OMap or during bootstrap */
+            paddr = tree_oid; 
+        }
     }
 
     /* 2. Read and traverse nodes */
