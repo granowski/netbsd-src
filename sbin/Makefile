@@ -65,7 +65,7 @@ SUBDIR+= mount_hfs
 .endif
 
 .if (${MKAPFS} != "no")
-SUBDIR+= mount_apfs
+SUBDIR+= newfs_apfs mount_apfs
 .endif
 
 .if (${MKKERNFS} != "no")

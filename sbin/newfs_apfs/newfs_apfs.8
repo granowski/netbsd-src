@@ -1,0 +1,33 @@
+.\"	$NetBSD$
+.\"
+.Dd October 18, 2026
+.Dt NEWFS_APFS 8
+.Os
+.Sh NAME
+.Nm newfs_apfs
+.Nd construct a new Apple File System (APFS)
+.Sh SYNOPSIS
+.Nm
+.Op Fl v Ar volume_name
+.Ar device
+.Sh DESCRIPTION
+The
+.Nm
+utility creates an APFS container on the specified
+.Ar device .
+.Pp
+The following options are available:
+.Bl -tag -width indent
+.It Fl v Ar volume_name
+Specify the name of the initial APFS volume.
+If not specified, "Untitled" is used.
+.El
+.Sh SEE ALSO
+.Xr mount_apfs 8 ,
+.Xr newfs 8
+.Sh HISTORY
+The
+.Nm
+utility first appeared in NetBSD 11.0.
+.Sh AUTHORS
+.An Junie Aq
