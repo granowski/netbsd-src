@@ -253,6 +253,7 @@ struct apfs_args {
 	char *fspec;		/* block special device to mount */
 };
 
+#ifdef _KERNEL
 struct apfsmount {
     struct mount    *am_mountp;
     dev_t            am_dev;
@@ -316,5 +317,6 @@ int apfs_vop_inactive(void *);
 int apfs_vop_reclaim(void *);
 int apfs_vop_strategy(void *);
 int apfs_vop_bmap(void *);
+#endif /* _KERNEL */
 
 #endif /* _FS_APFS_APFS_H_ */
