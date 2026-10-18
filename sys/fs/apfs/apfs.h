@@ -308,6 +308,7 @@ int apfs_omap_update(struct apfsmount *, oid_t, xid_t, apfs_paddr_t);
 uint64_t apfs_fletcher64(const void *, size_t);
 
 /* Vnode Operations */
+extern int (**apfs_vnodeop_p)(void *);
 extern const struct vnodeopv_desc * const apfs_vnodeopv_descs[];
 
 int apfs_vop_lookup(void *);

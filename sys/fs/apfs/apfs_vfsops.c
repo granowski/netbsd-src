@@ -251,7 +251,7 @@ apfs_statvfs(struct mount *mp, struct statvfs *sbp)
 	sbp->f_ffree = 0;
 	sbp->f_favail = 0;
 	sbp->f_fresvd = 0;
-	copystatvfs_info(sbp, mp);
+	copy_statvfs_info(sbp, mp);
 
 	return 0;
 }
@@ -261,6 +261,10 @@ apfs_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
 {
 	return 0;
 }
+
+static const struct genfs_ops apfs_genfsops = {
+	.gop_size = genfs_size,
+};
 
 int
 apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
@@ -298,6 +302,8 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	apnode->a_oid = ino;
 	memcpy(&apnode->a_ino, &val, sizeof(val));
 
+	vp->v_tag = VT_NON; /* TODO: Add VT_APFS to NetBSD */
+	vp->v_op = apfs_vnodeop_p;
 	vp->v_data = apnode;
 	
 	switch (apnode->a_ino.mode & S_IFMT) {
@@ -311,8 +317,8 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	default: vp->v_type = VNON; break;
 	}
 
-	genfs_node_init(vp, &apfs_vnodeop_p);
-	uvm_vnodeops.vop_put = genfs_putpages; /* Basic paging support */
+	genfs_node_init(vp, &apfs_genfsops);
+	uvm_vnp_setsize(vp, apnode->a_ino.uncompressed_size);
 
 	*vpp = vp;
 	return 0;

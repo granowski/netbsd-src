@@ -40,6 +40,8 @@ const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
 	{ &vop_islocked_desc, genfs_islocked },
 	{ &vop_strategy_desc, apfs_vop_strategy },
 	{ &vop_bmap_desc, apfs_vop_bmap },
+	{ &vop_getpages_desc, genfs_getpages },
+	{ &vop_putpages_desc, genfs_putpages },
 	{ NULL, NULL }
 };
 const struct vnodeopv_desc apfs_vnodeop_opv_desc =
