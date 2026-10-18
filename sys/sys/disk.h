@@ -212,6 +212,7 @@ struct dkwedge_list {
 #define	DKW_PTYPE_VMFS		"vmfs"
 #define	DKW_PTYPE_VMWRESV	"vmwresv"
 #define	DKW_PTYPE_ZFS		"zfs"
+#define	DKW_PTYPE_APFS		"apfs"
 
 /*
  * Ensure each symbol used in FSTYPE_DEFN in <sys/disklabel.h>

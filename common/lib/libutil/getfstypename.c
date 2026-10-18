@@ -133,6 +133,8 @@ getfstypename(int fstype)
 		return DKW_PTYPE_VMWRESV;
 	case FS_ZFS:
 		return DKW_PTYPE_ZFS;
+	case FS_APFS:
+		return DKW_PTYPE_APFS;
 	}
 	/* Stupid gcc, should know it is impossible to get here */
 	/*NOTREACHED*/
