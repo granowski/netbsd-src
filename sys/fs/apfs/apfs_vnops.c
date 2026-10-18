@@ -17,11 +17,19 @@ const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
 	{ &vop_default_desc, vn_default_error },
 	{ &vop_parsepath_desc, genfs_parsepath },
 	{ &vop_lookup_desc, apfs_vop_lookup },
+	{ &vop_create_desc, apfs_vop_create },
+	{ &vop_mknod_desc, apfs_vop_mknod },
 	{ &vop_open_desc, apfs_vop_open },
 	{ &vop_close_desc, apfs_vop_close },
 	{ &vop_access_desc, apfs_vop_access },
 	{ &vop_getattr_desc, apfs_vop_getattr },
+	{ &vop_setattr_desc, apfs_vop_setattr },
 	{ &vop_read_desc, apfs_vop_read },
+	{ &vop_write_desc, apfs_vop_write },
+	{ &vop_fsync_desc, apfs_vop_fsync },
+	{ &vop_remove_desc, apfs_vop_remove },
+	{ &vop_mkdir_desc, apfs_vop_mkdir },
+	{ &vop_rmdir_desc, apfs_vop_rmdir },
 	{ &vop_readdir_desc, apfs_vop_readdir },
 	{ &vop_inactive_desc, apfs_vop_inactive },
 	{ &vop_reclaim_desc, apfs_vop_reclaim },
@@ -50,6 +58,31 @@ apfs_vop_lookup(void *v)
 	/* TODO: Search Volume Root Tree for DREC record */
 	
 	return ENOENT;
+}
+
+int
+apfs_vop_create(void *v)
+{
+	struct vop_create_v3_args *ap = v;
+	struct vnode *dvp = ap->a_dvp;
+	struct componentname *cnp = ap->a_cnp;
+	struct vattr *vap = ap->a_vap;
+	
+	/* TODO: 
+	 * 1. Allocate new OID.
+	 * 2. Create inode record.
+	 * 3. Insert into Root Tree (COW).
+	 * 4. Add DREC to parent directory (COW).
+	 * 5. Update parent directory mod time.
+	 */
+	
+	return EOPNOTSUPP;
+}
+
+int
+apfs_vop_mknod(void *v)
+{
+	return EOPNOTSUPP;
 }
 
 int
@@ -108,6 +141,19 @@ apfs_vop_getattr(void *v)
 }
 
 int
+apfs_vop_setattr(void *v)
+{
+	struct vop_setattr_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct vattr *vap = ap->a_vap;
+	struct apfsnode *apnode = VTOA(vp);
+	
+	/* TODO: Update inode record and COW Root Tree */
+	
+	return EOPNOTSUPP;
+}
+
+int
 apfs_vop_read(void *v)
 {
 	struct vop_read_args *ap = v;
@@ -116,6 +162,49 @@ apfs_vop_read(void *v)
 
 	/* TODO: Implement extent mapping and bread() */
 	
+	return EOPNOTSUPP;
+}
+
+int
+apfs_vop_write(void *v)
+{
+	struct vop_write_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct uio *uio = ap->a_uio;
+	struct apfsnode *apnode = VTOA(vp);
+	
+	/* TODO:
+	 * 1. Allocate blocks for data (apfs_alloc_block).
+	 * 2. Create EXTENT records.
+	 * 3. Update inode size.
+	 * 4. COW the Root Tree.
+	 */
+	
+	return EOPNOTSUPP;
+}
+
+int
+apfs_vop_fsync(void *v)
+{
+	/* TODO: Flush transactions and write new Container Superblock (COW) */
+	return 0;
+}
+
+int
+apfs_vop_remove(void *v)
+{
+	return EOPNOTSUPP;
+}
+
+int
+apfs_vop_mkdir(void *v)
+{
+	return EOPNOTSUPP;
+}
+
+int
+apfs_vop_rmdir(void *v)
+{
 	return EOPNOTSUPP;
 }
 

@@ -114,6 +114,37 @@ typedef struct omap_val {
     paddr_t  ov_paddr;
 } omap_val_t;
 
+/* Checkpoint Mapping */
+typedef struct checkpoint_mapping {
+    obj_phys_t cpm_o;
+    uint32_t   cpm_type;
+    uint32_t   cpm_subtype;
+    uint32_t   cpm_size;
+    uint32_t   cpm_pad;
+    paddr_t    cpm_paddr;
+} checkpoint_mapping_t;
+
+/* Space Manager */
+typedef struct spaceman_phys {
+    obj_phys_t sm_o;
+    uint32_t   sm_block_size;
+    uint32_t   sm_pad;
+    uint64_t   sm_block_count;
+    uint32_t   sm_chunk_count;
+    uint32_t   sm_cib_count;
+    uint32_t   sm_cab_count;
+    uint32_t   sm_free_count;
+    oid_t      sm_idx_btree_oid;
+    oid_t      sm_free_queue_oid;
+} spaceman_phys_t;
+
+typedef struct chunk_info_phys {
+    uint64_t ci_addr;
+    uint64_t ci_block_count;
+    uint64_t ci_free_count;
+    oid_t    ci_bitmap_oid;
+} chunk_info_phys_t;
+
 /* B-Tree structures */
 typedef struct btree_node_phys {
     obj_phys_t btn_o;
@@ -165,7 +196,56 @@ typedef struct j_inode_val {
     uint16_t pad1;
     uint64_t uncompressed_size;
     /* ... additional fields ... */
+    uint64_t cloned_inum;
+    uint64_t purgeable_flags;
 } j_inode_val_t;
+
+/* Directory Entry Record Types */
+#define DREC_TYPE_MASK      0x000f
+#define DREC_TYPE_SHIFT     0
+#define DREC_FLAGS_MASK     0xfff0
+
+typedef struct j_drec_key {
+    uint64_t parent_id;
+    uint16_t name_len;
+    uint8_t  name[0];
+} j_drec_key_t;
+
+typedef struct j_drec_val {
+    uint64_t file_id;
+    uint64_t date_added;
+    uint16_t flags;
+    uint16_t xfields_len;
+} j_drec_val_t;
+
+/* Extent Records */
+typedef struct j_phys_ext_key {
+    uint64_t logical_addr;
+} j_phys_ext_key_t;
+
+typedef struct j_phys_ext_val {
+    uint64_t len_and_flags;
+    uint64_t phys_addr;
+} j_phys_ext_val_t;
+
+#define EXTENT_LEN_MASK 0x00ffffffffffffffULL
+#define EXTENT_KIND_MASK 0xff00000000000000ULL
+
+/* B-Tree Node Table of Contents Entry */
+typedef struct btree_toc_entry {
+    uint16_t key_off;
+    uint16_t key_len;
+    uint16_t val_off;
+    uint16_t val_len;
+} btree_toc_entry_t;
+
+/* Checkpoint Structures */
+typedef struct checkpoint_desc_phys {
+    obj_phys_t cpd_o;
+    uint32_t   cpd_flags;
+    uint32_t   cpd_count;
+    checkpoint_mapping_t cpd_map[0];
+} checkpoint_desc_phys_t;
 
 /* NetBSD Internal Structures */
 
@@ -180,6 +260,8 @@ struct apfsmount {
     uint32_t         am_block_size;
     nx_superblock_t  am_nx;
     apfs_superblock_t am_sb;
+    kmutex_t         am_lock;
+    struct vnode    *am_rootvp;
 };
 
 struct apfsnode {
@@ -188,6 +270,7 @@ struct apfsnode {
     struct apfsmount *a_amp;
     oid_t             a_oid;
     j_inode_val_t     a_ino;
+    bool              a_dirty;
 };
 
 #define VTOA(vp) ((struct apfsnode *)(vp)->v_data)
@@ -197,15 +280,39 @@ struct apfsnode {
 
 VFS_PROTOS(apfs);
 
+/* B-Tree Helpers */
+int apfs_btree_search(struct apfsmount *, oid_t, void *, void *, void *);
+int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
+int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
+
+/* Space Manager Helpers */
+int apfs_alloc_block(struct apfsmount *, paddr_t *);
+int apfs_free_block(struct apfsmount *, paddr_t);
+
+/* OMap Helpers */
+int apfs_omap_lookup(struct apfsmount *, oid_t, xid_t, paddr_t *);
+int apfs_omap_update(struct apfsmount *, oid_t, xid_t, paddr_t);
+
+/* Checksum */
+uint64_t apfs_fletcher64(const void *, size_t);
+
 /* Vnode Operations */
 extern const struct vnodeopv_desc * const apfs_vnodeopv_descs[];
 
 int apfs_vop_lookup(void *);
+int apfs_vop_create(void *);
+int apfs_vop_mknod(void *);
 int apfs_vop_open(void *);
 int apfs_vop_close(void *);
 int apfs_vop_access(void *);
 int apfs_vop_getattr(void *);
+int apfs_vop_setattr(void *);
 int apfs_vop_read(void *);
+int apfs_vop_write(void *);
+int apfs_vop_fsync(void *);
+int apfs_vop_remove(void *);
+int apfs_vop_mkdir(void *);
+int apfs_vop_rmdir(void *);
 int apfs_vop_readdir(void *);
 int apfs_vop_inactive(void *);
 int apfs_vop_reclaim(void *);

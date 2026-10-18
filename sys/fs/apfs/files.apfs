@@ -4,3 +4,4 @@ deffs	APFS
 
 file	fs/apfs/apfs_vfsops.c	apfs
 file	fs/apfs/apfs_vnops.c	apfs
+file	fs/apfs/apfs_subr.c	apfs

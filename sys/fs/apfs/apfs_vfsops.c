@@ -108,6 +108,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	amp->am_devvp = devvp;
 	amp->am_block_size = nx->nx_block_size;
 	memcpy(&amp->am_nx, nx, sizeof(*nx));
+	mutex_init(&amp->am_lock, MUTEX_DEFAULT, IPL_NONE);
 
 	brelse(bp, 0);
 
@@ -142,6 +143,7 @@ apfs_unmount(struct mount *mp, int mntflags)
 		return error;
 
 	vrele(amp->am_devvp);
+	mutex_destroy(&amp->am_lock);
 	kmem_free(amp, sizeof(*amp));
 	mp->mnt_data = NULL;
 	mp->mnt_flag &= ~MNT_LOCAL;
