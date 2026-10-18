@@ -1,0 +1,215 @@
+/*	$NetBSD$	*/
+
+#ifndef _FS_APFS_APFS_H_
+#define _FS_APFS_APFS_H_
+
+#include <sys/param.h>
+#include <sys/mount.h>
+#include <sys/vnode.h>
+#include <sys/uuid.h>
+#include <miscfs/genfs/genfs_node.h>
+
+/* APFS Primitive Types */
+typedef int64_t  paddr_t;
+typedef uint64_t oid_t;
+typedef uint64_t xid_t;
+
+#define MAX_CKSUM_SIZE 8
+
+/* Object Header */
+typedef struct obj_phys {
+    uint8_t  o_cksum[MAX_CKSUM_SIZE];
+    oid_t    o_oid;
+    xid_t    o_xid;
+    uint32_t o_type;
+    uint32_t o_subtype;
+} obj_phys_t;
+
+/* Object Types */
+#define OBJECT_TYPE_MASK            0x0000ffff
+#define OBJECT_TYPE_FLAGS_MASK      0xffff0000
+
+#define OBJ_CONTAINER_SUPERBLOCK    0x00000001
+#define OBJ_BTREE                   0x00000002
+#define OBJ_BTREE_NODE              0x00000003
+#define OBJ_SPACEMAN                0x00000005
+#define OBJ_OMAP                    0x0000000b
+#define OBJ_FS                      0x0000000d
+
+/* Container Superblock */
+#define NX_MAGIC 'BSXN'
+#define NX_MAX_FILE_SYSTEMS 100
+
+typedef struct nx_superblock {
+    obj_phys_t nx_o;
+    uint32_t   nx_magic;
+    uint32_t   nx_block_size;
+    uint64_t   nx_block_count;
+    uint64_t   nx_features;
+    uint64_t   nx_readonly_compatible_features;
+    uint64_t   nx_incompatible_features;
+    uuid_t     nx_uuid;
+    oid_t      nx_next_oid;
+    xid_t      nx_next_xid;
+    uint32_t   nx_xp_desc_blocks;
+    uint32_t   nx_xp_data_blocks;
+    paddr_t    nx_xp_desc_base;
+    paddr_t    nx_xp_data_base;
+    uint32_t   nx_xp_desc_next;
+    uint32_t   nx_xp_data_next;
+    uint32_t   nx_xp_desc_index;
+    uint32_t   nx_xp_desc_len;
+    uint32_t   nx_xp_data_index;
+    uint32_t   nx_xp_data_len;
+    oid_t      nx_spaceman_oid;
+    oid_t      nx_omap_oid;
+    oid_t      nx_reaper_oid;
+    uint32_t   nx_test_type;
+    uint32_t   nx_max_file_systems;
+    oid_t      nx_fs_oid[NX_MAX_FILE_SYSTEMS];
+} nx_superblock_t;
+
+/* Volume Superblock */
+#define APFS_MAGIC 'BSPA'
+
+typedef struct apfs_superblock {
+    obj_phys_t apfs_o;
+    uint32_t   apfs_magic;
+    uint32_t   apfs_fs_index;
+    uint64_t   apfs_features;
+    uint64_t   apfs_readonly_compatible_features;
+    uint64_t   apfs_incompatible_features;
+    uint64_t   apfs_unmount_time;
+    uint64_t   apfs_fs_reserve_block_count;
+    uint64_t   apfs_fs_quota_block_count;
+    uint64_t   apfs_fs_alloc_count;
+    // ...
+    oid_t      apfs_omap_oid;
+    oid_t      apfs_root_tree_oid;
+    uint64_t   apfs_next_obj_id;
+    uint64_t   apfs_num_files;
+    uint64_t   apfs_num_directories;
+    // ...
+} apfs_superblock_t;
+
+/* Object Map */
+typedef struct omap_phys {
+    obj_phys_t omap_o;
+    uint32_t   omap_flags;
+    uint32_t   omap_snap_count;
+    oid_t      omap_tree_oid;
+    oid_t      omap_snapshot_tree_oid;
+    xid_t      omap_most_recent_snap_xid;
+    xid_t      omap_pending_revert_xid;
+} omap_phys_t;
+
+typedef struct omap_key {
+    oid_t ok_oid;
+    xid_t ok_xid;
+} omap_key_t;
+
+typedef struct omap_val {
+    uint32_t ov_flags;
+    uint32_t ov_size;
+    paddr_t  ov_paddr;
+} omap_val_t;
+
+/* B-Tree structures */
+typedef struct btree_node_phys {
+    obj_phys_t btn_o;
+    uint16_t   btn_flags;
+    uint16_t   btn_level;
+    uint32_t   btn_nkeys;
+    uint16_t   btn_table_space_off;
+    uint16_t   btn_table_space_len;
+    uint16_t   btn_free_space_off;
+    uint16_t   btn_free_space_len;
+    uint16_t   btn_key_free_list_off;
+    uint16_t   btn_key_free_list_len;
+    uint16_t   btn_val_free_list_off;
+    uint16_t   btn_val_free_list_len;
+    /* ... table of contents and KV data follow ... */
+} btree_node_phys_t;
+
+#define BTNODE_ROOT           0x0001
+#define BTNODE_LEAF           0x0002
+#define BTNODE_FIXED_KV_SIZE  0x0004
+
+/* File-System Records */
+#define APFS_TYPE_INODE     0x1000
+#define APFS_TYPE_DIR_REC   0x3000
+#define APFS_TYPE_EXTENT    0x8000
+
+typedef struct j_key {
+    uint64_t obj_id_and_type;
+} j_key_t;
+
+#define OBJ_ID_MASK   0x0fffffffffffffffULL
+#define OBJ_TYPE_MASK 0xf000000000000000ULL
+#define OBJ_TYPE_SHIFT 60
+
+typedef struct j_inode_val {
+    uint64_t parent_id;
+    uint64_t private_id;
+    uint64_t create_time;
+    uint64_t mod_time;
+    uint64_t change_time;
+    uint64_t access_time;
+    uint64_t internal_flags;
+    uint32_t nchildren;
+    uint32_t nlink;
+    uint32_t bsd_flags;
+    uint32_t owner;
+    uint32_t group;
+    uint16_t mode;
+    uint16_t pad1;
+    uint64_t uncompressed_size;
+    /* ... additional fields ... */
+} j_inode_val_t;
+
+/* NetBSD Internal Structures */
+
+struct apfs_args {
+	char *fspec;		/* block special device to mount */
+};
+
+struct apfsmount {
+    struct mount    *am_mountp;
+    dev_t            am_dev;
+    struct vnode    *am_devvp;
+    uint32_t         am_block_size;
+    nx_superblock_t  am_nx;
+    apfs_superblock_t am_sb;
+};
+
+struct apfsnode {
+    struct genfs_node a_gnode;
+    struct vnode     *a_vnode;
+    struct apfsmount *a_amp;
+    oid_t             a_oid;
+    j_inode_val_t     a_ino;
+};
+
+#define VTOA(vp) ((struct apfsnode *)(vp)->v_data)
+
+/* VFS Operations */
+#define MOUNT_APFS "apfs"
+
+VFS_PROTOS(apfs);
+
+/* Vnode Operations */
+extern const struct vnodeopv_desc * const apfs_vnodeopv_descs[];
+
+int apfs_vop_lookup(void *);
+int apfs_vop_open(void *);
+int apfs_vop_close(void *);
+int apfs_vop_access(void *);
+int apfs_vop_getattr(void *);
+int apfs_vop_read(void *);
+int apfs_vop_readdir(void *);
+int apfs_vop_inactive(void *);
+int apfs_vop_reclaim(void *);
+int apfs_vop_strategy(void *);
+int apfs_vop_bmap(void *);
+
+#endif /* _FS_APFS_APFS_H_ */
