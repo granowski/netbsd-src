@@ -28,7 +28,7 @@ apfs_fletcher64(const void *buf, size_t len)
 
 /* OMap resolution: virtual OID -> physical block address */
 int
-apfs_omap_lookup(struct apfsmount *amp, oid_t oid, xid_t xid, paddr_t *paddrp)
+apfs_omap_lookup(struct apfsmount *amp, oid_t oid, xid_t xid, apfs_paddr_t *paddrp)
 {
     omap_key_t key;
     omap_val_t val;
@@ -50,7 +50,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
 {
     struct buf *bp;
     btree_node_phys_t *node;
-    paddr_t paddr;
+    apfs_paddr_t paddr;
     int error;
 
     /* 1. Resolve tree root OID to physical address */
@@ -92,7 +92,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
                     return 0;
                 } else {
                     /* Match in internal node, go down */
-                    paddr = *(paddr_t *)((uint8_t *)node + node->btn_table_space_off + toc[mid].val_off);
+                    paddr = *(apfs_paddr_t *)((uint8_t *)node + node->btn_table_space_off + toc[mid].val_off);
                     brelse(bp, 0);
                     goto next_level;
                 }
@@ -111,7 +111,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
 
         /* If not found and internal, follow the pointer to the left of 'low' */
         mid = (low > 0) ? low - 1 : 0;
-        paddr = *(paddr_t *)((uint8_t *)node + node->btn_table_space_off + toc[mid].val_off);
+        paddr = *(apfs_paddr_t *)((uint8_t *)node + node->btn_table_space_off + toc[mid].val_off);
         brelse(bp, 0);
 
 next_level:
@@ -137,7 +137,7 @@ apfs_btree_insert(struct apfsmount *amp, oid_t *tree_oid, void *key, void *val)
 
 /* Space Manager: Allocate a new block */
 int
-apfs_alloc_block(struct apfsmount *amp, paddr_t *paddrp)
+apfs_alloc_block(struct apfsmount *amp, apfs_paddr_t *paddrp)
 {
     mutex_enter(&amp->am_lock);
     /* 
@@ -153,7 +153,7 @@ apfs_alloc_block(struct apfsmount *amp, paddr_t *paddrp)
 }
 
 int
-apfs_free_block(struct apfsmount *amp, paddr_t paddr)
+apfs_free_block(struct apfsmount *amp, apfs_paddr_t paddr)
 {
     return 0;
 }

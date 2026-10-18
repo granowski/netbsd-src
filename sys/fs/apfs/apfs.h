@@ -10,7 +10,7 @@
 #include <miscfs/genfs/genfs_node.h>
 
 /* APFS Primitive Types */
-typedef int64_t  paddr_t;
+typedef int64_t  apfs_paddr_t;
 typedef uint64_t oid_t;
 typedef uint64_t xid_t;
 
@@ -48,13 +48,13 @@ typedef struct nx_superblock {
     uint64_t   nx_features;
     uint64_t   nx_readonly_compatible_features;
     uint64_t   nx_incompatible_features;
-    uuid_t     nx_uuid;
+    struct uuid     nx_uuid;
     oid_t      nx_next_oid;
     xid_t      nx_next_xid;
     uint32_t   nx_xp_desc_blocks;
     uint32_t   nx_xp_data_blocks;
-    paddr_t    nx_xp_desc_base;
-    paddr_t    nx_xp_data_base;
+    apfs_paddr_t    nx_xp_desc_base;
+    apfs_paddr_t    nx_xp_data_base;
     uint32_t   nx_xp_desc_next;
     uint32_t   nx_xp_data_next;
     uint32_t   nx_xp_desc_index;
@@ -111,7 +111,7 @@ typedef struct omap_key {
 typedef struct omap_val {
     uint32_t ov_flags;
     uint32_t ov_size;
-    paddr_t  ov_paddr;
+    apfs_paddr_t  ov_paddr;
 } omap_val_t;
 
 /* Checkpoint Mapping */
@@ -121,7 +121,7 @@ typedef struct checkpoint_mapping {
     uint32_t   cpm_subtype;
     uint32_t   cpm_size;
     uint32_t   cpm_pad;
-    paddr_t    cpm_paddr;
+    apfs_paddr_t    cpm_paddr;
 } checkpoint_mapping_t;
 
 /* Space Manager */
@@ -284,12 +284,12 @@ int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
 
 /* Space Manager Helpers */
-int apfs_alloc_block(struct apfsmount *, paddr_t *);
-int apfs_free_block(struct apfsmount *, paddr_t);
+int apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
+int apfs_free_block(struct apfsmount *, apfs_paddr_t);
 
 /* OMap Helpers */
-int apfs_omap_lookup(struct apfsmount *, oid_t, xid_t, paddr_t *);
-int apfs_omap_update(struct apfsmount *, oid_t, xid_t, paddr_t);
+int apfs_omap_lookup(struct apfsmount *, oid_t, xid_t, apfs_paddr_t *);
+int apfs_omap_update(struct apfsmount *, oid_t, xid_t, apfs_paddr_t);
 
 /* Checksum */
 uint64_t apfs_fletcher64(const void *, size_t);
