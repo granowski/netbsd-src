@@ -12,6 +12,7 @@
 #include <sys/conf.h>
 #include <sys/kmem.h>
 #include <sys/module.h>
+#include <sys/fcntl.h>
 
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/specfs/specdev.h>
