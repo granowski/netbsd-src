@@ -73,8 +73,8 @@ apfs_vop_lookup(void *v)
 	}
 
 	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen, KM_SLEEP);
-	key->parent_id = ((uint64_t)dnode->a_oid << 4) | APFS_TYPE_DIR_REC;
-	key->name_len = cnp->cn_namelen;
+	key->obj_id_and_type = ((uint64_t)dnode->a_oid << 4) | APFS_TYPE_DIR_REC;
+	key->name_len_and_hash = cnp->cn_namelen; /* Hash 0 for prefix search */
 	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
 
 	error = apfs_btree_search(dnode->a_amp, dnode->a_amp->am_sb.apfs_root_tree_oid, key, &val, NULL);
@@ -211,7 +211,14 @@ apfs_vop_read(void *v)
 		if (error) {
 			/* Hole */
 			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
-			error = uiomove_zeros(n, uio);
+			char zero[512];
+			memset(zero, 0, sizeof(zero));
+			while (n > 0) {
+				size_t m = MIN(n, sizeof(zero));
+				error = uiomove(zero, m, uio);
+				if (error) break;
+				n -= m;
+			}
 			if (error) break;
 			continue;
 		}
@@ -220,7 +227,14 @@ apfs_vop_read(void *v)
 		if (uio->uio_offset < found_key.logical_addr || uio->uio_offset >= found_key.logical_addr + extent_len) {
 			/* Offset not covered by this extent, must be a hole */
 			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
-			error = uiomove_zeros(n, uio);
+			char zero[512];
+			memset(zero, 0, sizeof(zero));
+			while (n > 0) {
+				size_t m = MIN(n, sizeof(zero));
+				error = uiomove(zero, m, uio);
+				if (error) break;
+				n -= m;
+			}
 			if (error) break;
 			continue;
 		}
@@ -289,6 +303,48 @@ apfs_vop_rmdir(void *v)
 	return EOPNOTSUPP;
 }
 
+struct apfs_readdir_ctx {
+	struct uio *uio;
+	int count;
+	int skip;
+};
+
+static int
+apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vlen)
+{
+	struct apfs_readdir_ctx *ctx = arg;
+	const j_drec_key_t *key = k;
+	const j_drec_val_t *val = v;
+	struct dirent de;
+	int error;
+
+	if (ctx->skip > 0) {
+		ctx->skip--;
+		return 0;
+	}
+
+	memset(&de, 0, sizeof(de));
+	de.d_fileno = val->file_id;
+	de.d_namlen = key->name_len_and_hash & DREC_NLEN_MASK;
+	de.d_type = DT_UNKNOWN; /* Could be derived from val->flags */
+	
+	size_t name_to_copy = MIN(de.d_namlen, sizeof(de.d_name) - 1);
+	memcpy(de.d_name, key->name, name_to_copy);
+	de.d_name[name_to_copy] = '\0';
+	de.d_reclen = _DIRENT_SIZE(&de);
+
+	if (ctx->uio->uio_resid < de.d_reclen)
+		return EJUSTRETURN; /* Stop iteration, but not an error */
+
+	error = uiomove(&de, de.d_reclen, ctx->uio);
+	if (error)
+		return error;
+
+	ctx->count++;
+	ctx->uio->uio_offset++;
+	return 0;
+}
+
 int
 apfs_vop_readdir(void *v)
 {
@@ -302,32 +358,46 @@ apfs_vop_readdir(void *v)
 	if (vp->v_type != VDIR)
 		return ENOTDIR;
 
-	while (uio->uio_resid > 0) {
+	/* 1. Handle . and .. */
+	if (uio->uio_offset == 0) {
 		memset(&de, 0, sizeof(de));
-		if (uio->uio_offset == 0) {
-			de.d_fileno = apnode->a_oid;
-			de.d_type = DT_DIR;
-			de.d_namlen = 1;
-			strlcpy(de.d_name, ".", sizeof(de.d_name));
-		} else if (uio->uio_offset == 1) {
-			de.d_fileno = apnode->a_ino.parent_id;
-			de.d_type = DT_DIR;
-			de.d_namlen = 2;
-			strlcpy(de.d_name, "..", sizeof(de.d_name));
-		} else {
-			break;
-		}
-
+		de.d_fileno = apnode->a_oid;
+		de.d_type = DT_DIR;
+		de.d_namlen = 1;
+		strlcpy(de.d_name, ".", sizeof(de.d_name));
 		de.d_reclen = _DIRENT_SIZE(&de);
-		if (uio->uio_resid < de.d_reclen)
-			break;
-
+		if (uio->uio_resid < de.d_reclen) return 0;
 		error = uiomove(&de, de.d_reclen, uio);
-		if (error)
-			break;
-
+		if (error) return error;
 		uio->uio_offset++;
 	}
+	if (uio->uio_offset == 1) {
+		memset(&de, 0, sizeof(de));
+		de.d_fileno = apnode->a_ino.parent_id;
+		de.d_type = DT_DIR;
+		de.d_namlen = 2;
+		strlcpy(de.d_name, "..", sizeof(de.d_name));
+		de.d_reclen = _DIRENT_SIZE(&de);
+		if (uio->uio_resid < de.d_reclen) return 0;
+		error = uiomove(&de, de.d_reclen, uio);
+		if (error) return error;
+		uio->uio_offset++;
+	}
+
+	/* 2. Iterate B-tree for DRECs */
+	struct apfs_readdir_ctx ctx;
+	ctx.uio = uio;
+	ctx.count = 0;
+	ctx.skip = uio->uio_offset - 2;
+
+	j_drec_key_t start_key;
+	memset(&start_key, 0, sizeof(start_key));
+	start_key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_DIR_REC;
+
+	error = apfs_btree_iterate(apnode->a_amp, apnode->a_amp->am_sb.apfs_root_tree_oid, 
+	    &start_key, apfs_readdir_cb, &ctx);
+
+	if (error == EJUSTRETURN) error = 0;
 
 	return error;
 }
@@ -358,11 +428,58 @@ apfs_vop_reclaim(void *v)
 int
 apfs_vop_strategy(void *v)
 {
-	return EOPNOTSUPP;
+	struct vop_strategy_args *ap = v;
+	struct buf *bp = ap->a_bp;
+	struct vnode *vp = bp->b_vp;
+
+	if (vp->v_type == VBLK || vp->v_type == VCHR)
+		panic("apfs_strategy: spec");
+
+	if (bp->b_bcount == 0) {
+		biodone(bp);
+		return 0;
+	}
+
+	return genfs_strategy(v);
 }
 
 int
 apfs_vop_bmap(void *v)
 {
-	return EOPNOTSUPP;
+	struct vop_bmap_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = apnode->a_amp;
+	j_extent_key_t key, found_key;
+	j_phys_ext_val_t val;
+	int error;
+
+	if (ap->a_vpp)
+		*ap->a_vpp = amp->am_devvp;
+	
+	if (ap->a_bnp == NULL)
+		return 0;
+
+	key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT;
+	key.logical_addr = (uint64_t)ap->a_bn * amp->am_block_size;
+
+	error = apfs_btree_search(amp, amp->am_sb.apfs_root_tree_oid, &key, &val, &found_key);
+	if (error) {
+		*ap->a_bnp = -1; /* Hole */
+		return 0;
+	}
+
+	uint64_t extent_len = val.len_and_flags & EXTENT_LEN_MASK;
+	if (key.logical_addr < found_key.logical_addr || key.logical_addr >= found_key.logical_addr + extent_len) {
+		*ap->a_bnp = -1;
+		return 0;
+	}
+
+	*ap->a_bnp = val.phys_addr + (key.logical_addr - found_key.logical_addr) / amp->am_block_size;
+	
+	if (ap->a_runp) {
+		*ap->a_runp = (extent_len - (key.logical_addr - found_key.logical_addr)) / amp->am_block_size - 1;
+	}
+
+	return 0;
 }

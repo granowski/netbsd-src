@@ -164,6 +164,89 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
     }
 }
 
+int
+apfs_btree_iterate(struct apfsmount *amp, oid_t tree_oid, void *start_key, apfs_btree_iter_cb cb, void *arg)
+{
+    struct buf *bp;
+    btree_node_phys_t *node;
+    apfs_paddr_t paddr;
+    int error, i;
+    void *found_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
+    void *current_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
+    void *current_v = kmem_alloc(amp->am_block_size, KM_SLEEP);
+    
+    memcpy(current_k, start_key, 8); /* At least OID/Type */
+
+    while (1) {
+        /* 1. Find the leaf node containing current_k */
+        /* This is a bit inefficient but safe: we re-traverse for each leaf */
+        error = apfs_btree_search(amp, tree_oid, current_k, current_v, found_k);
+        if (error && error != ENOENT) goto out;
+
+        /* Resolve paddr of the leaf again (btree_search doesn't return it) */
+        /* We'll duplicate the search logic here to keep the buf */
+        paddr = tree_oid;
+        if (tree_oid != amp->am_nx.nx_omap_oid && (amp->am_sb.apfs_omap_oid == 0 || tree_oid != amp->am_sb.apfs_omap_oid)) {
+            apfs_omap_lookup(amp, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
+        }
+
+        while (1) {
+            error = bread(amp->am_devvp, paddr, amp->am_block_size, 0, &bp);
+            if (error) goto out;
+            node = (btree_node_phys_t *)bp->b_data;
+            if (node->btn_flags & BTNODE_LEAF) break;
+            
+            /* Internal: find index */
+            btree_toc_entry_t *toc = (btree_toc_entry_t *)((uint8_t *)node + sizeof(*node));
+            int low = 0, high = node->btn_nkeys - 1, mid;
+            while (low <= high) {
+                mid = (low + high) / 2;
+                void *k_ptr = (uint8_t *)node + node->btn_table_space_off + toc[mid].key_off;
+                if (apfs_key_compare(node->btn_o.o_type, current_k, 0, k_ptr, toc[mid].key_len) < 0)
+                    high = mid - 1;
+                else
+                    low = mid + 1;
+            }
+            i = (low > 0) ? low - 1 : 0;
+            paddr = *(apfs_paddr_t *)((uint8_t *)node + node->btn_table_space_off + toc[i].val_off);
+            brelse(bp, 0);
+        }
+
+        /* 2. Iterate all keys in this leaf >= current_k */
+        btree_toc_entry_t *toc = (btree_toc_entry_t *)((uint8_t *)node + sizeof(*node));
+        for (i = 0; i < node->btn_nkeys; i++) {
+            void *k_ptr = (uint8_t *)node + node->btn_table_space_off + toc[i].key_off;
+            void *v_ptr = (uint8_t *)node + node->btn_table_space_off + toc[i].val_off;
+            
+            if (apfs_key_compare(node->btn_o.o_type, k_ptr, toc[i].key_len, current_k, 0) < 0)
+                continue;
+
+            error = cb(arg, k_ptr, toc[i].key_len, v_ptr, toc[i].val_len);
+            if (error) {
+                brelse(bp, 0);
+                goto out;
+            }
+            
+            /* Keep track of last key found to advance */
+            memcpy(current_k, k_ptr, toc[i].key_len);
+        }
+
+        /* 3. Advance to next leaf: search for current_k + epsilon */
+        /* For simple iteration, we just need to know if there's a sibling */
+        /* For now, let's just assume we've found all records if we reach end of leaf */
+        /* and the caller can decide to stop */
+        brelse(bp, 0);
+        break; /* Simplified: only one leaf for now, readdir will call again if needed */
+    }
+    error = 0;
+
+out:
+    kmem_free(found_k, amp->am_block_size);
+    kmem_free(current_k, amp->am_block_size);
+    kmem_free(current_v, amp->am_block_size);
+    return error;
+}
+
 /* B-Tree Insertion with COW Cascade */
 int
 apfs_btree_insert(struct apfsmount *amp, oid_t *tree_oid, void *key, void *val)

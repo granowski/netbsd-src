@@ -44,7 +44,7 @@ struct vfsops apfs_vfsops = {
 	.vfs_suspendctl = genfs_suspendctl,
 	.vfs_renamelock_enter = genfs_renamelock_enter,
 	.vfs_renamelock_exit = genfs_renamelock_exit,
-	.vfs_fsync = (void *)eopnotsupp,
+	.vfs_fsync = (void *)nullop,
 	.vfs_opv_descs = apfs_vnodeopv_descs
 };
 
@@ -224,7 +224,6 @@ apfs_unmount(struct mount *mp, int mntflags)
 	mutex_destroy(&amp->am_lock);
 	kmem_free(amp, sizeof(*amp));
 	mp->mnt_data = NULL;
-	mp->mnt_flag &= ~MNT_LOCAL;
 
 	return 0;
 }

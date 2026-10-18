@@ -169,12 +169,11 @@ typedef struct btree_node_phys {
 /* File-System Records */
 #define APFS_TYPE_ANY       0x0
 #define APFS_TYPE_INODE     0x1
-#define APFS_TYPE_DIR_REC   0x2
+#define APFS_TYPE_DIR_REC   0x3
 #define APFS_TYPE_EXTENT    0x8
 
 typedef struct j_key {
     uint64_t obj_id_and_type;
-    uint8_t  data[0];
 } j_key_t;
 
 typedef struct j_extent_key {
@@ -213,10 +212,14 @@ typedef struct j_inode_val {
 #define DREC_FLAGS_MASK     0xfff0
 
 typedef struct j_drec_key {
-    uint64_t parent_id;
-    uint16_t name_len;
+    uint64_t obj_id_and_type;
+    uint32_t name_len_and_hash;
     uint8_t  name[0];
 } j_drec_key_t;
+
+#define DREC_NLEN_MASK 0x000003ff
+#define DREC_HASH_MASK 0xfffffc00
+#define DREC_HASH_SHIFT 10
 
 typedef struct j_drec_val {
     uint64_t file_id;
@@ -287,7 +290,9 @@ struct apfsnode {
 VFS_PROTOS(apfs);
 
 /* B-Tree Helpers */
+typedef int (*apfs_btree_iter_cb)(void *, const void *, size_t, const void *, size_t);
 int apfs_btree_search(struct apfsmount *, oid_t, void *, void *, void *);
+int apfs_btree_iterate(struct apfsmount *, oid_t, void *, apfs_btree_iter_cb, void *);
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
 
