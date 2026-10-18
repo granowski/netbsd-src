@@ -7,7 +7,7 @@ SRCS=	mount_apfs.c pathadj.c
 MAN=	mount_apfs.8
 
 MOUNT=	${NETBSDSRCDIR}/sbin/mount
-CPPFLAGS+=-I${MOUNT}
+CPPFLAGS+=-I${MOUNT} -I${NETBSDSRCDIR}/sys
 .PATH:	${MOUNT}
 
 DPADD+=${LIBUTIL}
