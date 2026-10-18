@@ -74,7 +74,7 @@ apfs_vop_lookup(void *v)
 
 	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen, KM_SLEEP);
 	key->obj_id_and_type = ((uint64_t)dnode->a_oid << 4) | APFS_TYPE_DIR_REC;
-	key->name_len_and_hash = cnp->cn_namelen; /* Hash 0 for prefix search */
+	key->name_len_and_hash = (uint32_t)cnp->cn_namelen & DREC_NLEN_MASK; /* TODO: Add hash */
 	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
 
 	error = apfs_btree_search(dnode->a_amp, dnode->a_amp->am_sb.apfs_root_tree_oid, key, &val, NULL);

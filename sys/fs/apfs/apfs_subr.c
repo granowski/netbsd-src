@@ -59,11 +59,19 @@ apfs_key_compare(uint32_t type, const void *k1, size_t k1_len, const void *k2, s
     if (subtype == APFS_TYPE_DIR_REC) {
         const j_drec_key_t *dk1 = k1;
         const j_drec_key_t *dk2 = k2;
-        int len = MIN(dk1->name_len, dk2->name_len);
+        uint32_t h1 = dk1->name_len_and_hash & DREC_HASH_MASK;
+        uint32_t h2 = dk2->name_len_and_hash & DREC_HASH_MASK;
+
+        if (h1 < h2) return -1;
+        if (h1 > h2) return 1;
+
+        uint32_t len1 = dk1->name_len_and_hash & DREC_NLEN_MASK;
+        uint32_t len2 = dk2->name_len_and_hash & DREC_NLEN_MASK;
+        int len = MIN(len1, len2);
         int cmp = memcmp(dk1->name, dk2->name, len);
         if (cmp != 0) return cmp;
-        if (dk1->name_len < dk2->name_len) return -1;
-        if (dk1->name_len > dk2->name_len) return 1;
+        if (len1 < len2) return -1;
+        if (len1 > len2) return 1;
     } else if (subtype == APFS_TYPE_EXTENT) {
         const j_extent_key_t *ek1 = k1;
         const j_extent_key_t *ek2 = k2;
