@@ -79,7 +79,8 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	struct buf *bp;
 	nx_superblock_t *nx;
 	int error, mode;
-	uint32_t block_size;
+	uint32_t block_size, max_file_systems;
+	bool found_file_system;
 	dev_t dev;
 
 	if (args == NULL) {
@@ -96,16 +97,21 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 	/* 1. Get the device vnode */
 	error = namei_simple_user(args->fspec, NSM_FOLLOW_NOEMULROOT, &devvp);
-	if (error)
+	if (error) {
+		printf("apfs_mount: cannot resolve device %s: error %d\n",
+		    args->fspec, error);
 		return error;
+	}
 
 	if (devvp->v_type != VBLK) {
+		printf("apfs_mount: %s is not a block device\n", args->fspec);
 		vrele(devvp);
 		return ENOTBLK;
 	}
 
 	dev = devvp->v_rdev;
 	if (bdevsw_lookup(dev) == NULL) {
+		printf("apfs_mount: no block device driver for %s\n", args->fspec);
 		vrele(devvp);
 		return ENXIO;
 	}
@@ -119,6 +125,8 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	error = VOP_OPEN(devvp, mode, l->l_cred);
 	VOP_UNLOCK(devvp);
 	if (error) {
+		printf("apfs_mount: cannot open %s: error %d\n",
+		    args->fspec, error);
 		vrele(devvp);
 		return error;
 	}
@@ -126,6 +134,8 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	/* 3. Read Container Superblock (Block 0) */
 	error = bread(devvp, 0, 4096, 0, &bp);
 	if (error) {
+		printf("apfs_mount: cannot read container superblock: error %d\n",
+		    error);
 		goto error_close;
 	}
 
@@ -151,6 +161,16 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		block_size = 4096;
 	if (block_size < 4096 || block_size > 65536 ||
 	    block_size % DEV_BSIZE != 0) {
+		printf("apfs_mount: invalid container block size %u\n",
+		    block_size);
+		brelse(bp, 0);
+		error = EINVAL;
+		goto error_close;
+	}
+	max_file_systems = le32toh(nx->nx_max_file_systems);
+	if (max_file_systems > NX_MAX_FILE_SYSTEMS) {
+		printf("apfs_mount: invalid filesystem count %u (maximum %u)\n",
+		    max_file_systems, NX_MAX_FILE_SYSTEMS);
 		brelse(bp, 0);
 		error = EINVAL;
 		goto error_close;
@@ -170,31 +190,62 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 	/* 5. Find Volume Superblock */
 	error = ENOENT;
-	for (int i = 0; i < le32toh(amp->am_nx.nx_max_file_systems); i++) {
-		if (le64toh(amp->am_nx.nx_fs_oid[i]) != 0) {
-			apfs_paddr_t sb_paddr;
-			/* Look up volume superblock in container OMap */
-			error = apfs_omap_lookup(amp,
-			    le64toh(amp->am_nx.nx_omap_oid),
-			    le64toh(amp->am_nx.nx_fs_oid[i]),
-			    le64toh(amp->am_nx.nx_next_xid) - 1, &sb_paddr);
-			if (error == 0) {
-				error = apfs_bread(amp, sb_paddr, &bp);
-				if (error == 0) {
-					apfs_superblock_t *vsb = (apfs_superblock_t *)bp->b_data;
-					if (le32toh(vsb->apfs_magic) == APFS_MAGIC) {
-						memcpy(&amp->am_sb, vsb, sizeof(*vsb));
-						brelse(bp, 0);
-						error = 0;
-						break;
-					}
-					brelse(bp, 0);
-				}
-			}
+	found_file_system = false;
+	printf("apfs_mount: searching %u filesystem slots, OMap OID 0x%llx\n",
+	    max_file_systems,
+	    (unsigned long long)le64toh(amp->am_nx.nx_omap_oid));
+	for (uint32_t i = 0; i < max_file_systems; i++) {
+		uint64_t fs_oid = le64toh(amp->am_nx.nx_fs_oid[i]);
+		apfs_paddr_t sb_paddr;
+		apfs_superblock_t *vsb;
+
+		if (fs_oid == 0)
+			continue;
+		found_file_system = true;
+
+		error = apfs_omap_lookup(amp,
+		    le64toh(amp->am_nx.nx_omap_oid), fs_oid,
+		    le64toh(amp->am_nx.nx_next_xid) - 1, &sb_paddr);
+		if (error != 0) {
+			printf("apfs_mount: OMap lookup failed for filesystem OID "
+			    "0x%llx (slot %u): error %d\n",
+			    (unsigned long long)fs_oid, i, error);
+			continue;
 		}
+
+		printf("apfs_mount: filesystem OID 0x%llx maps to APFS block %lld\n",
+		    (unsigned long long)fs_oid, (long long)sb_paddr);
+		error = apfs_bread(amp, sb_paddr, &bp);
+		if (error != 0) {
+			printf("apfs_mount: cannot read volume superblock at APFS "
+			    "block %lld: error %d\n", (long long)sb_paddr, error);
+			continue;
+		}
+
+		vsb = (apfs_superblock_t *)bp->b_data;
+		if (le32toh(vsb->apfs_magic) != APFS_MAGIC) {
+			printf("apfs_mount: invalid volume superblock at APFS block "
+			    "%lld: expected magic 0x%x, got 0x%x\n",
+			    (long long)sb_paddr, APFS_MAGIC,
+			    le32toh(vsb->apfs_magic));
+			brelse(bp, 0);
+			error = EINVAL;
+			continue;
+		}
+
+		memcpy(&amp->am_sb, vsb, sizeof(*vsb));
+		brelse(bp, 0);
+		error = 0;
+		break;
 	}
 
+	if (!found_file_system)
+		printf("apfs_mount: container has no filesystem OIDs in its "
+		    "filesystem slots\n");
+
 	if (error) {
+		printf("apfs_mount: could not locate a valid volume superblock: "
+		    "error %d\n", error);
 		mutex_destroy(&amp->am_lock);
 		kmem_free(amp, sizeof(*amp));
 		goto error_close;
