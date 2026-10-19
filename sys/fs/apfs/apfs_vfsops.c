@@ -112,7 +112,7 @@ apfs_load_integrity(struct apfsmount *amp)
 		return EINVAL;
 	}
 
-	version = le32toh(meta->im_version);
+	apfs_version = le32toh(meta->im_version);
 	flags = le32toh(meta->im_flags);
 	hash_type = le32toh(meta->im_hash_type);
 	hash_offset = le32toh(meta->im_root_hash_offset);
@@ -135,8 +135,8 @@ apfs_load_integrity(struct apfsmount *amp)
 		brelse(bp, 0);
 		return EAUTH;
 	}
-	if ((version != INTEGRITY_META_VERSION_1 &&
-	    version != INTEGRITY_META_VERSION_2) ||
+	if ((apfs_version != INTEGRITY_META_VERSION_1 &&
+	    apfs_version != INTEGRITY_META_VERSION_2) ||
 	    hash_offset < sizeof(*meta) ||
 	    hash_offset > amp->am_block_size ||
 	    hash_size > amp->am_block_size - hash_offset) {
