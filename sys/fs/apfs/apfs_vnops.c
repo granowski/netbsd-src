@@ -432,7 +432,8 @@ apfs_vop_strategy(void *v)
 {
 	struct vop_strategy_args *ap = v;
 	struct buf *bp = ap->a_bp;
-	struct vnode *vp = bp->b_vp;
+	struct vnode *vp = ap->a_vp;
+	int error;
 
 	if (vp->v_type == VBLK || vp->v_type == VCHR)
 		panic("apfs_strategy: spec");
@@ -442,7 +443,21 @@ apfs_vop_strategy(void *v)
 		return 0;
 	}
 
-	return genfs_strategy(v);
+	if (bp->b_blkno == bp->b_lblkno) {
+		error = VOP_BMAP(vp, bp->b_lblkno, &vp, &bp->b_blkno, NULL);
+		if (error) {
+			bp->b_error = error;
+			biodone(bp);
+			return error;
+		}
+		if (bp->b_blkno == (daddr_t)-1) {
+			clrbuf(bp);
+			biodone(bp);
+			return 0;
+		}
+	}
+
+	return VOP_STRATEGY(vp, bp);
 }
 
 int
@@ -477,7 +492,8 @@ apfs_vop_bmap(void *v)
 		return 0;
 	}
 
-	*ap->a_bnp = val.phys_addr + (key.logical_addr - found_key.logical_addr) / amp->am_block_size;
+	*ap->a_bnp = (val.phys_addr + (key.logical_addr - found_key.logical_addr) / amp->am_block_size)
+	    << (amp->am_block_shift - DEV_BSHIFT);
 	
 	if (ap->a_runp) {
 		*ap->a_runp = (extent_len - (key.logical_addr - found_key.logical_addr)) / amp->am_block_size - 1;

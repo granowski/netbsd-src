@@ -137,6 +137,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	amp->am_devvp = devvp;
 	amp->am_block_size = nx->nx_block_size;
 	if (amp->am_block_size == 0) amp->am_block_size = 4096;
+	amp->am_block_shift = ffs(amp->am_block_size) - 1;
 	memcpy(&amp->am_nx, nx, sizeof(*nx));
 	mutex_init(&amp->am_lock, MUTEX_DEFAULT, IPL_NONE);
 
@@ -173,6 +174,8 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 	mp->mnt_data = amp;
 	mp->mnt_stat.f_namemax = 255;
+	mp->mnt_fs_bshift = amp->am_block_shift;
+	mp->mnt_dev_bshift = DEV_BSHIFT;
 	mp->mnt_flag |= MNT_LOCAL;
 	mp->mnt_flag |= MNT_RDONLY; /* Force Read-Only for now */
 	vfs_getnewfsid(mp);

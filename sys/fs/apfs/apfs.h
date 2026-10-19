@@ -269,6 +269,7 @@ struct apfsmount {
     dev_t            am_dev;
     struct vnode    *am_devvp;
     uint32_t         am_block_size;
+    uint32_t         am_block_shift;
     nx_superblock_t  am_nx;
     apfs_superblock_t am_sb;
     kmutex_t         am_lock;
