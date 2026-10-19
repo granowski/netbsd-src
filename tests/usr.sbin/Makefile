@@ -6,6 +6,7 @@ TESTSDIR=       ${TESTSBASE}/usr.sbin
 TESTS_SUBDIRS+= certctl
 TESTS_SUBDIRS+= cpuctl
 TESTS_SUBDIRS+= execsnoop
+TESTS_SUBDIRS+= fstyp
 TESTS_SUBDIRS+= inetd
 TESTS_SUBDIRS+= makefs
 TESTS_SUBDIRS+= mtree
