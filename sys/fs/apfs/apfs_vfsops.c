@@ -13,6 +13,7 @@
 #include <sys/kmem.h>
 #include <sys/module.h>
 #include <sys/fcntl.h>
+#include <sys/endian.h>
 #include <uvm/uvm_extern.h>
 
 #include <miscfs/genfs/genfs.h>
@@ -80,10 +81,14 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	int error, mode;
 	dev_t dev;
 
-	if (args == NULL)
+	if (args == NULL) {
+		printf("apfs_mount: args is NULL\n");
 		return EINVAL;
-	if (*data_len < sizeof *args)
+	}
+	if (*data_len < sizeof *args) {
+		printf("apfs_mount: data_len too small (%zu < %zu)\n", *data_len, sizeof *args);
 		return EINVAL;
+	}
 
 	if (mp->mnt_flag & MNT_UPDATE)
 		return EOPNOTSUPP;
@@ -124,7 +129,17 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	}
 
 	nx = (nx_superblock_t *)bp->b_data;
-	if (nx->nx_magic != NX_MAGIC) {
+	if (le32toh(nx->nx_magic) != NX_MAGIC) {
+		printf("apfs_mount: magic mismatch: expected 0x%x, got 0x%x (raw 0x%x)\n", 
+		    NX_MAGIC, le32toh(nx->nx_magic), nx->nx_magic);
+		brelse(bp, 0);
+		error = EINVAL;
+		goto error_close;
+	}
+
+	if ((le32toh(nx->nx_o.o_type) & OBJECT_TYPE_MASK) != OBJ_CONTAINER_SUPERBLOCK) {
+		printf("apfs_mount: not a container superblock (type 0x%x, raw 0x%x)\n", 
+		    le32toh(nx->nx_o.o_type), nx->nx_o.o_type);
 		brelse(bp, 0);
 		error = EINVAL;
 		goto error_close;
@@ -154,7 +169,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 				error = bread(devvp, sb_paddr, amp->am_block_size, 0, &bp);
 				if (error == 0) {
 					apfs_superblock_t *vsb = (apfs_superblock_t *)bp->b_data;
-					if (vsb->apfs_magic == APFS_MAGIC) {
+					if (le32toh(vsb->apfs_magic) == APFS_MAGIC) {
 						memcpy(&amp->am_sb, vsb, sizeof(*vsb));
 						brelse(bp, 0);
 						error = 0;

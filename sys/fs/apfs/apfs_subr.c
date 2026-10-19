@@ -34,7 +34,10 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
     omap_val_t val;
     int error;
 
-    if (omap_oid == 0) return EINVAL;
+    if (omap_oid == 0) {
+        printf("apfs_omap_lookup: omap_oid is 0\n");
+        return EINVAL;
+    }
 
     key.ok_oid = oid;
     key.ok_xid = xid;
@@ -110,7 +113,10 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *k
         if (error) return error;
 
         node = (btree_node_phys_t *)bp->b_data;
-        if (apfs_fletcher64(node, amp->am_block_size) != *(uint64_t *)node->btn_o.o_cksum) {
+        if (apfs_fletcher64(node, amp->am_block_size) != le64toh(*(uint64_t *)node->btn_o.o_cksum)) {
+            printf("apfs_btree_search: checksum mismatch: calculated 0x%llx, disk 0x%llx\n",
+                (unsigned long long)apfs_fletcher64(node, amp->am_block_size),
+                (unsigned long long)le64toh(*(uint64_t *)node->btn_o.o_cksum));
             brelse(bp, 0);
             return EINVAL;
         }
