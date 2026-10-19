@@ -8,6 +8,7 @@
 #include <sys/buf.h>
 #include <sys/dirent.h>
 #include <sys/kmem.h>
+#include <sys/endian.h>
 
 #include <miscfs/genfs/genfs.h>
 
@@ -74,14 +75,19 @@ apfs_vop_lookup(void *v)
 		}
 	}
 
-	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen, KM_SLEEP);
-	key->obj_id_and_type = ((uint64_t)dnode->a_oid << 4) | APFS_TYPE_DIR_REC;
-	key->name_len_and_hash = (uint32_t)cnp->cn_namelen & DREC_NLEN_MASK; /* TODO: Add hash */
+	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen + 1, KM_SLEEP);
+	key->obj_id_and_type = htole64(((uint64_t)dnode->a_oid << 4) |
+	    APFS_TYPE_DIR_REC);
+	key->name_len_and_hash = htole32(
+	    ((uint32_t)cnp->cn_namelen + 1) & DREC_NLEN_MASK);
 	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
+	key->name[cnp->cn_namelen] = '\0';
 
-	error = apfs_btree_search(dnode->a_amp, dnode->a_amp->am_sb.apfs_omap_oid, 
-	    dnode->a_amp->am_sb.apfs_root_tree_oid, key, sizeof(*key) + cnp->cn_namelen, &val, NULL);
-	kmem_free(key, sizeof(*key) + cnp->cn_namelen);
+	error = apfs_btree_search(dnode->a_amp,
+	    le64toh(dnode->a_amp->am_sb.apfs_omap_oid),
+	    le64toh(dnode->a_amp->am_sb.apfs_root_tree_oid), key,
+	    sizeof(*key) + cnp->cn_namelen + 1, &val, sizeof(val), NULL, 0);
+	kmem_free(key, sizeof(*key) + cnp->cn_namelen + 1);
 
 	if (error == 0) {
 		return apfs_vget(dvp->v_mount, val.file_id, LK_EXCLUSIVE, ap->a_vpp);
@@ -207,11 +213,15 @@ apfs_vop_read(void *v)
 		return EISDIR;
 
 	while (uio->uio_resid > 0 && uio->uio_offset < apnode->a_ino.uncompressed_size) {
-		key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT;
-		key.logical_addr = uio->uio_offset;
+		key.obj_id_and_type = htole64(
+		    ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT);
+		key.logical_addr = htole64(uio->uio_offset);
 
-		error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, 
-		    amp->am_sb.apfs_root_tree_oid, &key, sizeof(key), &val, &found_key);
+		error = apfs_btree_search(amp,
+		    le64toh(amp->am_sb.apfs_omap_oid),
+		    le64toh(amp->am_sb.apfs_root_tree_oid), &key,
+		    sizeof(key), &val, sizeof(val), &found_key,
+		    sizeof(found_key));
 		if (error) {
 			/* Hole */
 			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
@@ -227,8 +237,12 @@ apfs_vop_read(void *v)
 			continue;
 		}
 
-		uint64_t extent_len = val.len_and_flags & EXTENT_LEN_MASK;
-		if (uio->uio_offset < found_key.logical_addr || uio->uio_offset >= found_key.logical_addr + extent_len) {
+		uint64_t extent_len = le64toh(val.len_and_flags) &
+		    EXTENT_LEN_MASK;
+		uint64_t extent_start = le64toh(found_key.logical_addr);
+		uint64_t phys_addr = le64toh(val.phys_addr);
+		if (uio->uio_offset < extent_start ||
+		    uio->uio_offset >= extent_start + extent_len) {
 			/* Offset not covered by this extent, must be a hole */
 			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
 			char zero[512];
@@ -244,11 +258,12 @@ apfs_vop_read(void *v)
 		}
 
 		/* Read from extent */
-		uint64_t block_off = uio->uio_offset - found_key.logical_addr;
-		uint64_t phys_block = val.phys_addr + (block_off / amp->am_block_size);
+		uint64_t block_off = uio->uio_offset - extent_start;
+		uint64_t phys_block = phys_addr +
+		    (block_off / amp->am_block_size);
 		size_t off_in_block = block_off % amp->am_block_size;
 		size_t n = MIN(uio->uio_resid, amp->am_block_size - off_in_block);
-		n = MIN(n, found_key.logical_addr + extent_len - uio->uio_offset);
+		n = MIN(n, extent_start + extent_len - uio->uio_offset);
 
 		error = apfs_bread(amp, phys_block, &bp);
 		if (error) break;
@@ -320,16 +335,22 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	const j_drec_key_t *key = k;
 	const j_drec_val_t *val = v;
 	struct dirent de;
+	uint32_t name_len;
 	int error;
 
+	if (klen < sizeof(*key) || vlen < sizeof(*val))
+		return EINVAL;
 	if (ctx->skip > 0) {
 		ctx->skip--;
 		return 0;
 	}
 
+	name_len = le32toh(key->name_len_and_hash) & DREC_NLEN_MASK;
+	if (name_len == 0 || name_len > klen - sizeof(*key))
+		return EINVAL;
 	memset(&de, 0, sizeof(de));
-	de.d_fileno = val->file_id;
-	de.d_namlen = key->name_len_and_hash & DREC_NLEN_MASK;
+	de.d_fileno = le64toh(val->file_id);
+	de.d_namlen = name_len - 1;
 	de.d_type = DT_UNKNOWN; /* Could be derived from val->flags */
 	
 	size_t name_to_copy = MIN(de.d_namlen, sizeof(de.d_name) - 1);
@@ -396,10 +417,13 @@ apfs_vop_readdir(void *v)
 
 	j_drec_key_t start_key;
 	memset(&start_key, 0, sizeof(start_key));
-	start_key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_DIR_REC;
+	start_key.obj_id_and_type = htole64(
+	    ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_DIR_REC);
 
-	error = apfs_btree_iterate(apnode->a_amp, apnode->a_amp->am_sb.apfs_omap_oid,
-	    apnode->a_amp->am_sb.apfs_root_tree_oid, &start_key, sizeof(start_key), apfs_readdir_cb, &ctx);
+	error = apfs_btree_iterate(apnode->a_amp,
+	    le64toh(apnode->a_amp->am_sb.apfs_omap_oid),
+	    le64toh(apnode->a_amp->am_sb.apfs_root_tree_oid), &start_key,
+	    sizeof(start_key), apfs_readdir_cb, &ctx);
 
 	if (error == EJUSTRETURN) error = 0;
 
@@ -480,22 +504,32 @@ apfs_vop_bmap(void *v)
 	if (ap->a_bnp == NULL)
 		return 0;
 
-	key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT;
-	key.logical_addr = (uint64_t)ap->a_bn * amp->am_block_size;
+	key.obj_id_and_type = htole64(
+	    ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT);
+	key.logical_addr = htole64(
+	    (uint64_t)ap->a_bn * amp->am_block_size);
 
-	error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, amp->am_sb.apfs_root_tree_oid, &key, sizeof(key), &val, &found_key);
+	error = apfs_btree_search(amp,
+	    le64toh(amp->am_sb.apfs_omap_oid),
+	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key),
+	    &val, sizeof(val), &found_key, sizeof(found_key));
 	if (error) {
 		*ap->a_bnp = -1; /* Hole */
 		return 0;
 	}
 
-	uint64_t extent_len = val.len_and_flags & EXTENT_LEN_MASK;
-	if (key.logical_addr < found_key.logical_addr || key.logical_addr >= found_key.logical_addr + extent_len) {
+	uint64_t extent_len = le64toh(val.len_and_flags) & EXTENT_LEN_MASK;
+	uint64_t logical_addr = le64toh(key.logical_addr);
+	uint64_t extent_start = le64toh(found_key.logical_addr);
+	uint64_t phys_addr = le64toh(val.phys_addr);
+	if (logical_addr < extent_start ||
+	    logical_addr >= extent_start + extent_len) {
 		*ap->a_bnp = -1;
 		return 0;
 	}
 
-	*ap->a_bnp = (val.phys_addr + (key.logical_addr - found_key.logical_addr) / amp->am_block_size)
+	*ap->a_bnp = (phys_addr + (logical_addr - extent_start) /
+	    amp->am_block_size)
 	    << (amp->am_block_shift - DEV_BSHIFT);
 	
 	if (ap->a_runp) {

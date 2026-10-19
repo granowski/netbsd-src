@@ -81,6 +81,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	int error, mode;
 	uint32_t block_size, max_file_systems;
 	bool found_file_system;
+	uint64_t stored_checksum;
 	dev_t dev;
 
 	if (args == NULL) {
@@ -131,7 +132,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		return error;
 	}
 
-	/* 3. Read Container Superblock (Block 0) */
+	/* 3. Read block zero to discover the container block size. */
 	error = bread(devvp, 0, 4096, 0, &bp);
 	if (error) {
 		printf("apfs_mount: cannot read container superblock: error %d\n",
@@ -157,12 +158,39 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	}
 
 	block_size = le32toh(nx->nx_block_size);
-	if (block_size == 0)
-		block_size = 4096;
 	if (block_size < 4096 || block_size > 65536 ||
 	    block_size % DEV_BSIZE != 0) {
 		printf("apfs_mount: invalid container block size %u\n",
 		    block_size);
+		brelse(bp, 0);
+		error = EINVAL;
+		goto error_close;
+	}
+
+	brelse(bp, 0);
+	bp = NULL;
+	if (block_size != 4096) {
+		error = bread(devvp, 0, block_size, 0, &bp);
+		if (error != 0) {
+			printf("apfs_mount: cannot read full container superblock: "
+			    "error %d\n", error);
+			goto error_close;
+		}
+		nx = (nx_superblock_t *)bp->b_data;
+	}
+	if (le32toh(nx->nx_magic) != NX_MAGIC ||
+	    (le32toh(nx->nx_o.o_type) & OBJECT_TYPE_MASK) !=
+	    OBJ_CONTAINER_SUPERBLOCK ||
+	    le32toh(nx->nx_block_size) != block_size) {
+		printf("apfs_mount: invalid full container superblock header\n");
+		brelse(bp, 0);
+		error = EINVAL;
+		goto error_close;
+	}
+	memcpy(&stored_checksum, nx->nx_o.o_cksum, sizeof(stored_checksum));
+	if (apfs_fletcher64(bp->b_data, block_size) !=
+	    le64toh(stored_checksum)) {
+		printf("apfs_mount: invalid container superblock checksum\n");
 		brelse(bp, 0);
 		error = EINVAL;
 		goto error_close;
@@ -188,12 +216,24 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 	brelse(bp, 0);
 
+	/* Block zero only locates the checkpoint ring; it may be stale. */
+	error = apfs_select_checkpoint(amp);
+	if (error != 0) {
+		printf("apfs_mount: could not find a valid container checkpoint: "
+		    "error %d\n", error);
+		mutex_destroy(&amp->am_lock);
+		kmem_free(amp, sizeof(*amp));
+		goto error_close;
+	}
+	max_file_systems = le32toh(amp->am_nx.nx_max_file_systems);
+	printf("apfs_mount: selected checkpoint XID 0x%llx, OMap OID 0x%llx\n",
+	    (unsigned long long)amp->am_checkpoint_xid,
+	    (unsigned long long)le64toh(amp->am_nx.nx_omap_oid));
+
 	/* 5. Find Volume Superblock */
 	error = ENOENT;
 	found_file_system = false;
-	printf("apfs_mount: searching %u filesystem slots, OMap OID 0x%llx\n",
-	    max_file_systems,
-	    (unsigned long long)le64toh(amp->am_nx.nx_omap_oid));
+	printf("apfs_mount: searching %u filesystem slots\n", max_file_systems);
 	for (uint32_t i = 0; i < max_file_systems; i++) {
 		uint64_t fs_oid = le64toh(amp->am_nx.nx_fs_oid[i]);
 		apfs_paddr_t sb_paddr;
@@ -205,7 +245,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 		error = apfs_omap_lookup(amp,
 		    le64toh(amp->am_nx.nx_omap_oid), fs_oid,
-		    le64toh(amp->am_nx.nx_next_xid) - 1, &sb_paddr);
+		    amp->am_checkpoint_xid, &sb_paddr);
 		if (error != 0) {
 			printf("apfs_mount: OMap lookup failed for filesystem OID "
 			    "0x%llx (slot %u): error %d\n",
@@ -223,10 +263,15 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		}
 
 		vsb = (apfs_superblock_t *)bp->b_data;
-		if (le32toh(vsb->apfs_magic) != APFS_MAGIC) {
+		if (!apfs_checksum_valid(amp, bp->b_data) ||
+		    le64toh(vsb->apfs_o.o_oid) != fs_oid ||
+		    (le32toh(vsb->apfs_o.o_type) & OBJECT_TYPE_MASK) != OBJ_FS ||
+		    le32toh(vsb->apfs_magic) != APFS_MAGIC) {
 			printf("apfs_mount: invalid volume superblock at APFS block "
-			    "%lld: expected magic 0x%x, got 0x%x\n",
-			    (long long)sb_paddr, APFS_MAGIC,
+			    "%lld (oid 0x%llx type 0x%x magic 0x%x)\n",
+			    (long long)sb_paddr,
+			    (unsigned long long)le64toh(vsb->apfs_o.o_oid),
+			    le32toh(vsb->apfs_o.o_type),
 			    le32toh(vsb->apfs_magic));
 			brelse(bp, 0);
 			error = EINVAL;
@@ -235,6 +280,52 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 		memcpy(&amp->am_sb, vsb, sizeof(*vsb));
 		brelse(bp, 0);
+
+		apfs_paddr_t root_paddr;
+		struct buf *root_bp;
+		error = apfs_omap_lookup(amp,
+		    le64toh(amp->am_sb.apfs_omap_oid),
+		    le64toh(amp->am_sb.apfs_root_tree_oid),
+		    amp->am_checkpoint_xid, &root_paddr);
+		if (error != 0) {
+			printf("apfs_mount: cannot resolve root tree OID 0x%llx: "
+			    "error %d\n",
+			    (unsigned long long)le64toh(
+			    amp->am_sb.apfs_root_tree_oid), error);
+			continue;
+		}
+		error = apfs_bread(amp, root_paddr, &root_bp);
+		if (error != 0)
+			continue;
+		btree_node_phys_t *root = (btree_node_phys_t *)root_bp->b_data;
+		btree_info_t root_info;
+		memcpy(&root_info, (uint8_t *)root + amp->am_block_size -
+		    sizeof(root_info), sizeof(root_info));
+		if (!apfs_checksum_valid(amp, root_bp->b_data) ||
+		    (le32toh(root->btn_o.o_type) & OBJECT_TYPE_MASK) !=
+		    OBJ_BTREE ||
+		    (le16toh(root->btn_flags) & BTNODE_ROOT) == 0 ||
+		    le32toh(root->btn_o.o_subtype) != OBJ_FSTREE ||
+		    le32toh(root_info.bt_node_size) != amp->am_block_size ||
+		    le64toh(root_info.bt_node_count) == 0) {
+			brelse(root_bp, 0);
+			printf("apfs_mount: invalid root file-system tree node at "
+			    "APFS block %lld\n", (long long)root_paddr);
+			error = EINVAL;
+			continue;
+		}
+		if ((le32toh(root_info.bt_flags) &
+		    (BTREE_HASHED | BTREE_NOHEADER)) != 0 ||
+		    (le32toh(root_info.bt_flags) &
+		    (BTREE_PHYSICAL | BTREE_EPHEMERAL)) ==
+		    (BTREE_PHYSICAL | BTREE_EPHEMERAL)) {
+			brelse(root_bp, 0);
+			printf("apfs_mount: unsupported root file-system tree "
+			    "flags 0x%x\n", le32toh(root_info.bt_flags));
+			error = EOPNOTSUPP;
+			continue;
+		}
+		brelse(root_bp, 0);
 		error = 0;
 		break;
 	}
@@ -313,8 +404,7 @@ apfs_unmount(struct mount *mp, int mntflags)
 int
 apfs_root(struct mount *mp, int lktype, struct vnode **vpp)
 {
-	/* Root directory OID in APFS is typically 1 */
-	return VFS_VGET(mp, 1, lktype, vpp);
+	return VFS_VGET(mp, 2, lktype, vpp);
 }
 
 int
@@ -325,11 +415,12 @@ apfs_statvfs(struct mount *mp, struct statvfs *sbp)
 	sbp->f_bsize = amp->am_block_size;
 	sbp->f_frsize = amp->am_block_size;
 	sbp->f_iosize = amp->am_block_size;
-	sbp->f_blocks = amp->am_nx.nx_block_count;
-	sbp->f_bfree = amp->am_sb.apfs_fs_reserve_block_count; /* Simplified */
-	sbp->f_bavail = amp->am_sb.apfs_fs_reserve_block_count;
+	sbp->f_blocks = le64toh(amp->am_nx.nx_block_count);
+	sbp->f_bfree = le64toh(amp->am_sb.apfs_fs_reserve_block_count);
+	sbp->f_bavail = le64toh(amp->am_sb.apfs_fs_reserve_block_count);
 	sbp->f_bresvd = 0;
-	sbp->f_files = amp->am_sb.apfs_num_files + amp->am_sb.apfs_num_directories;
+	sbp->f_files = le64toh(amp->am_sb.apfs_num_files) +
+	    le64toh(amp->am_sb.apfs_num_directories);
 	sbp->f_ffree = 0;
 	sbp->f_favail = 0;
 	sbp->f_fresvd = 0;
@@ -370,8 +461,12 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	}
 
 	/* 2. Load inode from Root Tree */
-	key.obj_id_and_type = ((uint64_t)ino << 4) | APFS_TYPE_INODE;
-	error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, amp->am_sb.apfs_root_tree_oid, &key, sizeof(key), &val, NULL);
+	key.obj_id_and_type = htole64(((uint64_t)ino << 4) |
+	    APFS_TYPE_INODE);
+	error = apfs_btree_search(amp,
+	    le64toh(amp->am_sb.apfs_omap_oid),
+	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key), &val,
+	    sizeof(val), NULL, 0);
 	if (error) {
 		vgone(vp);
 		vput(vp);
@@ -384,6 +479,24 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	apnode->a_vnode = vp;
 	apnode->a_oid = ino;
 	memcpy(&apnode->a_ino, &val, sizeof(val));
+	apnode->a_ino.parent_id = le64toh(apnode->a_ino.parent_id);
+	apnode->a_ino.private_id = le64toh(apnode->a_ino.private_id);
+	apnode->a_ino.create_time = le64toh(apnode->a_ino.create_time);
+	apnode->a_ino.mod_time = le64toh(apnode->a_ino.mod_time);
+	apnode->a_ino.change_time = le64toh(apnode->a_ino.change_time);
+	apnode->a_ino.access_time = le64toh(apnode->a_ino.access_time);
+	apnode->a_ino.internal_flags = le64toh(apnode->a_ino.internal_flags);
+	apnode->a_ino.nchildren = le32toh(apnode->a_ino.nchildren);
+	apnode->a_ino.default_protection_class =
+	    le32toh(apnode->a_ino.default_protection_class);
+	apnode->a_ino.write_generation_counter =
+	    le32toh(apnode->a_ino.write_generation_counter);
+	apnode->a_ino.bsd_flags = le32toh(apnode->a_ino.bsd_flags);
+	apnode->a_ino.owner = le32toh(apnode->a_ino.owner);
+	apnode->a_ino.group = le32toh(apnode->a_ino.group);
+	apnode->a_ino.mode = le16toh(apnode->a_ino.mode);
+	apnode->a_ino.uncompressed_size =
+	    le64toh(apnode->a_ino.uncompressed_size);
 
 	vp->v_tag = VT_NON; /* TODO: Add VT_APFS to NetBSD */
 	vp->v_op = apfs_vnodeop_p;

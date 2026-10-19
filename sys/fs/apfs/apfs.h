@@ -34,7 +34,14 @@ typedef struct obj_phys {
 #define OBJ_BTREE_NODE              0x00000003
 #define OBJ_SPACEMAN                0x00000005
 #define OBJ_OMAP                    0x0000000b
+#define OBJ_CHECKPOINT_MAP          0x0000000c
 #define OBJ_FS                      0x0000000d
+#define OBJ_FSTREE                  0x0000000e
+#define OBJ_STORAGE_MASK            0xc0000000
+#define OBJ_EPHEMERAL                0x80000000
+#define OBJ_PHYSICAL                 0x40000000
+
+#define CHECKPOINT_MAP_LAST         0x00000001
 
 /* Container Superblock */
 #define NX_MAGIC 0x4253584e
@@ -72,6 +79,16 @@ typedef struct nx_superblock {
 /* Volume Superblock */
 #define APFS_MAGIC 0x42535041
 
+typedef struct apfs_crypto_state {
+    uint16_t major_version;
+    uint16_t minor_version;
+    uint32_t cpflags;
+    uint32_t persistent_class;
+    uint32_t key_os_version;
+    uint16_t key_revision;
+    uint16_t unused;
+} apfs_crypto_state_t;
+
 typedef struct apfs_superblock {
     obj_phys_t apfs_o;
     uint32_t   apfs_magic;
@@ -83,13 +100,27 @@ typedef struct apfs_superblock {
     uint64_t   apfs_fs_reserve_block_count;
     uint64_t   apfs_fs_quota_block_count;
     uint64_t   apfs_fs_alloc_count;
-    // ...
+    apfs_crypto_state_t apfs_meta_crypto;
+    uint32_t   apfs_root_tree_type;
+    uint32_t   apfs_extentref_tree_type;
+    uint32_t   apfs_snap_meta_tree_type;
     oid_t      apfs_omap_oid;
     oid_t      apfs_root_tree_oid;
+    oid_t      apfs_extentref_tree_oid;
+    oid_t      apfs_snap_meta_tree_oid;
+    xid_t      apfs_revert_to_xid;
+    oid_t      apfs_revert_to_sblock_oid;
     uint64_t   apfs_next_obj_id;
     uint64_t   apfs_num_files;
     uint64_t   apfs_num_directories;
-    // ...
+    uint64_t   apfs_num_symlinks;
+    uint64_t   apfs_num_other_fsobjects;
+    uint64_t   apfs_num_snapshots;
+    uint64_t   apfs_total_blocks_alloced;
+    uint64_t   apfs_total_blocks_freed;
+    struct uuid apfs_vol_uuid;
+    uint64_t   apfs_last_mod_time;
+    uint64_t   apfs_fs_flags;
 } apfs_superblock_t;
 
 /* Object Map */
@@ -97,6 +128,8 @@ typedef struct omap_phys {
     obj_phys_t omap_o;
     uint32_t   omap_flags;
     uint32_t   omap_snap_count;
+    uint32_t   omap_tree_type;
+    uint32_t   omap_snapshot_tree_type;
     oid_t      omap_tree_oid;
     oid_t      omap_snapshot_tree_oid;
     xid_t      omap_most_recent_snap_xid;
@@ -116,13 +149,21 @@ typedef struct omap_val {
 
 /* Checkpoint Mapping */
 typedef struct checkpoint_mapping {
-    obj_phys_t cpm_o;
     uint32_t   cpm_type;
     uint32_t   cpm_subtype;
     uint32_t   cpm_size;
     uint32_t   cpm_pad;
-    apfs_paddr_t    cpm_paddr;
+    oid_t      cpm_fs_oid;
+    oid_t      cpm_oid;
+    apfs_paddr_t cpm_paddr;
 } checkpoint_mapping_t;
+
+typedef struct checkpoint_map_phys {
+    obj_phys_t cpm_o;
+    uint32_t   cpm_flags;
+    uint32_t   cpm_count;
+    checkpoint_mapping_t cpm_map[0];
+} checkpoint_map_phys_t;
 
 /* Space Manager */
 typedef struct spaceman_phys {
@@ -165,11 +206,15 @@ typedef struct btree_node_phys {
 #define BTNODE_ROOT           0x0001
 #define BTNODE_LEAF           0x0002
 #define BTNODE_FIXED_KV_SIZE  0x0004
+#define BTREE_EPHEMERAL        0x00000008
+#define BTREE_PHYSICAL         0x00000010
+#define BTREE_NOHEADER         0x00000040
+#define BTREE_HASHED           0x00000080
 
 /* File-System Records */
 #define APFS_TYPE_ANY       0x0
-#define APFS_TYPE_INODE     0x1
-#define APFS_TYPE_DIR_REC   0x3
+#define APFS_TYPE_INODE     0x3
+#define APFS_TYPE_DIR_REC   0x9
 #define APFS_TYPE_EXTENT    0x8
 
 typedef struct j_key {
@@ -193,18 +238,20 @@ typedef struct j_inode_val {
     uint64_t change_time;
     uint64_t access_time;
     uint64_t internal_flags;
-    uint32_t nchildren;
-    uint32_t nlink;
+    union {
+        int32_t nchildren;
+        int32_t nlink;
+    };
+    uint32_t default_protection_class;
+    uint32_t write_generation_counter;
     uint32_t bsd_flags;
     uint32_t owner;
     uint32_t group;
     uint16_t mode;
     uint16_t pad1;
     uint64_t uncompressed_size;
-    /* ... additional fields ... */
-    uint64_t cloned_inum;
-    uint64_t purgeable_flags;
-} j_inode_val_t;
+    uint8_t xfields[0];
+} __attribute__((packed)) j_inode_val_t;
 
 /* Directory Entry Record Types */
 #define DREC_TYPE_MASK      0x000f
@@ -249,13 +296,26 @@ typedef struct btree_toc_entry {
     uint16_t val_len;
 } btree_toc_entry_t;
 
-/* Checkpoint Structures */
-typedef struct checkpoint_desc_phys {
-    obj_phys_t cpd_o;
-    uint32_t   cpd_flags;
-    uint32_t   cpd_count;
-    checkpoint_mapping_t cpd_map[0];
-} checkpoint_desc_phys_t;
+typedef struct btree_toc_fixed_entry {
+    uint16_t key_off;
+    uint16_t val_off;
+} btree_toc_fixed_entry_t;
+
+typedef struct btree_info {
+    uint32_t bt_flags;
+    uint32_t bt_node_size;
+    uint32_t bt_key_size;
+    uint32_t bt_val_size;
+    uint32_t bt_longest_key;
+    uint32_t bt_longest_val;
+    uint64_t bt_key_count;
+    uint64_t bt_node_count;
+} btree_info_t;
+
+typedef struct btree_index_node_val {
+    oid_t child_oid;
+    uint8_t child_hash[64];
+} btree_index_node_val_t;
 
 /* NetBSD Internal Structures */
 
@@ -272,6 +332,8 @@ struct apfsmount {
     uint32_t         am_block_shift;
     nx_superblock_t  am_nx;
     apfs_superblock_t am_sb;
+    uint32_t         am_desc_blocks;
+    uint64_t         am_checkpoint_xid;
     kmutex_t         am_lock;
     struct vnode    *am_rootvp;
 };
@@ -292,11 +354,16 @@ VFS_PROTOS(apfs);
 
 /* B-Tree Helpers */
 typedef int (*apfs_btree_iter_cb)(void *, const void *, size_t, const void *, size_t);
-int apfs_btree_search(struct apfsmount *, oid_t, oid_t, void *, size_t, void *, void *);
+int apfs_btree_search(struct apfsmount *, oid_t, oid_t, void *, size_t,
+    void *, size_t, void *, size_t);
 int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_btree_iter_cb, void *);
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
 int apfs_bread(struct apfsmount *, apfs_paddr_t, struct buf **);
+bool apfs_checksum_valid(struct apfsmount *, const void *);
+int apfs_select_checkpoint(struct apfsmount *);
+int apfs_checkpoint_lookup(struct apfsmount *, oid_t, oid_t,
+    apfs_paddr_t *);
 
 /* Space Manager Helpers */
 int apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
