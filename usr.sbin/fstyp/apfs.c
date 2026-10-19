@@ -37,13 +37,71 @@ __RCSID("$NetBSD: apfs.c,v 1.1 2019/12/27 11:15:06 tkusumi Exp $");
 
 #include "fstyp.h"
 
+/**
+ * calculate_fletcher64_checksum: Computes the 64-bit Fletcher checksum for the given data.
+ * @param data Pointer to the data buffer.
+ * @param len Length of the data buffer in bytes.
+ * @return The 64-bit Fletcher checksum.
+ */
+uint64_t calculate_fletcher64_checksum(const void *data, size_t len)
+{
+    const uint8_t *buffer = (const uint8_t *)data;
+    uint32_t sum1 = 0;
+    uint32_t sum2 = 0;
+
+    for (size_t i = 0; i < len; ++i) {
+        // Sum1 accumulates the sums of bytes (b_i)
+        sum1 = (sum1 + buffer[i]);
+        // Sum2 accumulates the sums of the first sum (sum1)
+        sum2 = (sum2 + sum1);
+    }
+
+    // Combine the two 32-bit sums into a single 64-bit result.
+    return ((uint64_t)sum2 << 32) | sum1;
+}
+
+/**
+ * checksum_validate_superblock: Validates the integrity of the Superblock using checksums.
+ * @param csb The structure containing the Superblock data.
+ * @return 0 on success, non-zero on failure.
+ */
+int checksum_validate_superblock(struct nx_superblock *csb)
+{
+    /*
+     * Validation based on spec: The checksum covers all fields of the object metadata
+     * (nx_o) EXCEPT for the space reserved for the checksum itself.
+     * 1. Determine Payload Size: The checksum payload size is the offset of o_cksum
+     *    within the nx_o object structure.
+     */
+
+    // 1. Calculate Payload Size: This is the offset of o_cksum within nx_o.
+    const size_t payload_size = offsetof(struct nx_obj, o_cksum);
+
+    // 2. Calculate Checksum: Use the Fletcher-64 algorithm on the payload region.
+    uint64_t calculated_cksum = calculate_fletcher64_checksum(&csb->nx_o, payload_size);
+
+    // 3. Compare: Extract the stored checksum and compare.
+    uint64_t stored_cksum;
+    // Copy the 8 bytes from the o_cksum field into our comparison variable.
+    memcpy(&stored_cksum, &csb->nx_o.o_cksum, 8);
+
+    if (calculated_cksum != stored_cksum) {
+        fprintf(stderr, "APFS Checksum Error: Superblock integrity failure detected.\n");
+        fprintf(stderr, "  Calculated Checksum: 0x%llX\n", (unsigned long long)calculated_cksum);
+        fprintf(stderr, "  Stored Checksum:    0x%llX\n", (unsigned long long)stored_cksum);
+        return EINVAL; // Indicates a checksum failure
+    }
+
+    return 0; // Success
+}
+
+
 /*
  * This really detects the container format, which might be best supported by
  * geom_part or a special GEOM class.
  *
  * https://developer.apple.com/support/downloads/Apple-File-System-Reference.pdf
  */
-
 #define	NX_CKSUM_SZ		8
 
 typedef uint64_t nx_oid_t;
@@ -51,11 +109,11 @@ typedef uint64_t nx_oid_t;
 typedef uint64_t nx_xid_t;
 
 struct nx_obj {
-	uint8_t		o_cksum[NX_CKSUM_SZ];	/* Fletcher 64 */
-	nx_oid_t	o_oid;
-	nx_xid_t	o_xid;
-	uint32_t	o_type;
-	uint32_t	o_subtype;
+    uint8_t		o_cksum[NX_CKSUM_SZ];	/* Fletcher 64 */
+    nx_oid_t	o_oid;
+    nx_xid_t	o_xid;
+    uint32_t	o_type;
+    uint32_t	o_subtype;
 };
 
 /* nx_obj::o_oid */
@@ -75,33 +133,30 @@ struct nx_obj {
 #define	OBJ_NONPERSISTENT		0x08000000
 
 struct nx_superblock {
-	struct nx_obj	nx_o;
-	char		nx_magic[4];
-	/* ... other stuff that doesn't matter */
+    struct nx_obj	nx_o;
+    char		nx_magic[4];
+    /* ... other stuff that doesn't matter */
 };
 
 int
 fstyp_apfs(FILE *fp, char *label, size_t size)
 {
-	struct nx_superblock *csb;
-	int retval;
+    struct nx_superblock *csb;
+    int retval;
 
-	retval = 1;
-	csb = read_buf(fp, 0, sizeof(*csb));
-	if (csb == NULL)
-		goto fail;
+    retval = 1;
+    csb = read_buf(fp, 0, sizeof(*csb));
+    if (csb == NULL)
+        goto fail;
 
-	/* Ideally, checksum the SB here. */
-	if (strncmp(csb->nx_magic, "NXSB", 4) != 0 ||
-	    csb->nx_o.o_oid != OID_NX_SUPERBLOCK ||
-	    (csb->nx_o.o_type & OBJECT_TYPE_MASK) != OBJECT_TYPE_NX_SUPERBLOCK)
-		goto fail;
+    if (checksum_validate_superblock(csb) != 0)
+        goto fail;
 
-	retval = 0;
+    retval = 0;
 
-	/* No label support yet. */
+    /* No label support yet. */
 
 fail:
-	free(csb);
-	return (retval);
+    free(csb);
+    return (retval);
 }
