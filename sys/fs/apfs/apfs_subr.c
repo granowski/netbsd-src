@@ -12,7 +12,7 @@ uint64_t
 apfs_fletcher64(const void *buf, size_t len)
 {
     const uint32_t *data = buf;
-    uint32_t s1 = 0, s2 = 0;
+    uint64_t sum1 = 0, sum2 = 0, c1, c2;
     size_t count = len / 4;
 
     /* Skip the first 8 bytes (checksum itself) */
@@ -20,11 +20,15 @@ apfs_fletcher64(const void *buf, size_t len)
     count -= 2;
 
     for (size_t i = 0; i < count; i++) {
-        s1 += le32toh(data[i]);
-        s2 += s1;
+        sum1 += le32toh(data[i]);
+        sum2 += sum1;
     }
 
-    return ((uint64_t)s2 << 32) | s1;
+    /* APFS stores the complemented Fletcher residues, not the raw sums. */
+    c1 = UINT32_MAX - ((sum1 + sum2) % UINT32_MAX);
+    c2 = UINT32_MAX - ((sum1 + c1) % UINT32_MAX);
+
+    return (c2 << 32) | c1;
 }
 
 int

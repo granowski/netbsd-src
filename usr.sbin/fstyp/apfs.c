@@ -46,7 +46,7 @@ static uint64_t
 apfs_fletcher64(const void *buf, size_t len)
 {
 	const uint8_t *data = buf;
-	uint32_t sum1 = 0, sum2 = 0;
+	uint64_t sum1 = 0, sum2 = 0, c1, c2;
 
 	for (size_t off = NX_CKSUM_SZ; off < len; off += sizeof(uint32_t)) {
 		uint32_t word;
@@ -56,7 +56,10 @@ apfs_fletcher64(const void *buf, size_t len)
 		sum2 += sum1;
 	}
 
-	return ((uint64_t)sum2 << 32) | sum1;
+	c1 = UINT32_MAX - ((sum1 + sum2) % UINT32_MAX);
+	c2 = UINT32_MAX - ((sum1 + c1) % UINT32_MAX);
+
+	return (c2 << 32) | c1;
 }
 
 /*

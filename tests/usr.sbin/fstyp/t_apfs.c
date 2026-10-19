@@ -99,7 +99,7 @@ ATF_TC_HEAD(valid_4k_superblock, tc)
 ATF_TC_BODY(valid_4k_superblock, tc)
 {
 	FILE *fp = make_apfs_image(APFS_BLOCK_SIZE_4K,
-	    UINT64_C(0xdcdbbd33b16326b2));
+	    UINT64_C(0xdcdfadb371bd299c));
 
 	ATF_REQUIRE_EQ(fstyp_apfs(fp, NULL, 0), 0);
 	fclose(fp);
@@ -114,7 +114,7 @@ ATF_TC_HEAD(valid_64k_superblock, tc)
 ATF_TC_BODY(valid_64k_superblock, tc)
 {
 	FILE *fp = make_apfs_image(APFS_BLOCK_SIZE_64K,
-	    UINT64_C(0x9b69bf33930a52b2));
+	    UINT64_C(0x9f6c8262cd890acf));
 
 	ATF_REQUIRE_EQ(fstyp_apfs(fp, NULL, 0), 0);
 	fclose(fp);
@@ -129,7 +129,7 @@ ATF_TC_HEAD(corrupted_superblock, tc)
 ATF_TC_BODY(corrupted_superblock, tc)
 {
 	FILE *fp = make_apfs_image(APFS_BLOCK_SIZE_4K,
-	    UINT64_C(0xdcdbbd33b16326b2));
+	    UINT64_C(0xdcdfadb371bd299c));
 
 	ATF_REQUIRE_EQ(fseek(fp, 100, SEEK_SET), 0);
 	ATF_REQUIRE_EQ(fputc(0xff, fp), 0xff);
@@ -149,7 +149,7 @@ ATF_TC_BODY(bad_superblock_header, tc)
 	FILE *fp;
 
 	fp = make_apfs_image(APFS_BLOCK_SIZE_4K,
-	    UINT64_C(0xdcdbbd33b16326b2));
+	    UINT64_C(0xdcdfadb371bd299c));
 	ATF_REQUIRE_EQ(fseek(fp, 32, SEEK_SET), 0);
 	ATF_REQUIRE_EQ(fwrite("NOPE", 4, 1, fp), 1);
 	rewind(fp);
@@ -157,7 +157,7 @@ ATF_TC_BODY(bad_superblock_header, tc)
 	fclose(fp);
 
 	fp = make_apfs_image(APFS_BLOCK_SIZE_4K,
-	    UINT64_C(0xdcdbbd33b16326b2));
+	    UINT64_C(0xdcdfadb371bd299c));
 	ATF_REQUIRE_EQ(fseek(fp, 36, SEEK_SET), 0);
 	ATF_REQUIRE_EQ(fwrite("\x00\x08\x00\x00", 4, 1, fp), 1);
 	rewind(fp);
