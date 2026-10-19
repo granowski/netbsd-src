@@ -52,8 +52,11 @@ apfs_bread(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
 int
 apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, apfs_paddr_t *paddrp)
 {
+    struct buf *bp;
+    omap_phys_t *omap;
     omap_key_t key;
     omap_val_t val;
+    uint64_t calculated_cksum, stored_cksum;
     int error;
 
     if (omap_oid == 0) {
@@ -61,12 +64,52 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
         return EINVAL;
     }
 
-    key.ok_oid = oid;
-    key.ok_xid = xid;
+    error = apfs_bread(amp, (apfs_paddr_t)omap_oid, &bp);
+    if (error != 0)
+        return error;
 
-    error = apfs_btree_search(amp, omap_oid, omap_oid, &key, sizeof(key), &val, NULL);
+    omap = (omap_phys_t *)bp->b_data;
+    calculated_cksum = apfs_fletcher64(bp->b_data, amp->am_block_size);
+    memcpy(&stored_cksum, omap->omap_o.o_cksum, sizeof(stored_cksum));
+    stored_cksum = le64toh(stored_cksum);
+    if (calculated_cksum != stored_cksum) {
+        printf("apfs_omap_lookup: OMap checksum mismatch at APFS block "
+            "%llu: calculated 0x%016llx, disk 0x%016llx\n",
+            (unsigned long long)omap_oid,
+            (unsigned long long)calculated_cksum,
+            (unsigned long long)stored_cksum);
+        brelse(bp, 0);
+        return EINVAL;
+    }
+    if (le64toh(omap->omap_o.o_oid) != omap_oid ||
+        (le32toh(omap->omap_o.o_type) & OBJECT_TYPE_MASK) != OBJ_OMAP) {
+        printf("apfs_omap_lookup: invalid OMap object at APFS block %llu "
+            "(oid 0x%llx type 0x%x)\n",
+            (unsigned long long)omap_oid,
+            (unsigned long long)le64toh(omap->omap_o.o_oid),
+            le32toh(omap->omap_o.o_type));
+        brelse(bp, 0);
+        return EINVAL;
+    }
+
+    oid_t tree_oid = le64toh(omap->omap_tree_oid);
+    brelse(bp, 0);
+    if (tree_oid == 0) {
+        printf("apfs_omap_lookup: OMap object at APFS block %llu has no "
+            "tree root\n", (unsigned long long)omap_oid);
+        return EINVAL;
+    }
+
+    key.ok_oid = htole64(oid);
+    key.ok_xid = htole64(xid);
+    error = apfs_btree_search(amp, 0, tree_oid, &key, sizeof(key), &val, NULL);
     if (error == 0) {
-        *paddrp = val.ov_paddr;
+        *paddrp = (apfs_paddr_t)le64toh((uint64_t)val.ov_paddr);
+    } else {
+        printf("apfs_omap_lookup: tree at APFS block %llu has no mapping "
+            "for oid 0x%llx at xid 0x%llx (error %d)\n",
+            (unsigned long long)tree_oid, (unsigned long long)oid,
+            (unsigned long long)xid, error);
     }
     return error;
 }
@@ -74,6 +117,24 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
 static int
 apfs_key_compare(uint32_t type, const void *k1, size_t k1_len, const void *k2, size_t k2_len)
 {
+    if ((type & OBJECT_TYPE_MASK) == OBJ_OMAP) {
+        const omap_key_t *ok1 = k1;
+        const omap_key_t *ok2 = k2;
+        uint64_t oid1, oid2, xid1, xid2;
+
+        if (k1_len < sizeof(*ok1) || k2_len < sizeof(*ok2))
+            return 0;
+        oid1 = le64toh(ok1->ok_oid);
+        oid2 = le64toh(ok2->ok_oid);
+        if (oid1 < oid2) return -1;
+        if (oid1 > oid2) return 1;
+        xid1 = le64toh(ok1->ok_xid);
+        xid2 = le64toh(ok2->ok_xid);
+        if (xid1 < xid2) return -1;
+        if (xid1 > xid2) return 1;
+        return 0;
+    }
+
     uint64_t kt1 = *(const uint64_t *)k1;
     uint64_t kt2 = *(const uint64_t *)k2;
 
@@ -164,7 +225,8 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *k
             mid = (low + high) / 2;
             k_ptr = (uint8_t *)node + node->btn_table_space_off + toc[mid].key_off;
             
-            cmp = apfs_key_compare(node->btn_o.o_type, key, key_len, k_ptr, toc[mid].key_len);
+            cmp = apfs_key_compare(le32toh(node->btn_o.o_subtype),
+                key, key_len, k_ptr, toc[mid].key_len);
             
             if (cmp == 0) {
                 last_match = mid;
@@ -199,7 +261,14 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *k
              * For extents, we allow returning a key that is smaller than requested 
              * (the extent starting before or at the offset).
              */
-            if ((*(uint64_t *)key & OBJ_TYPE_MASK) == APFS_TYPE_EXTENT) {
+            if ((le32toh(node->btn_o.o_subtype) & OBJECT_TYPE_MASK) == OBJ_OMAP) {
+                const omap_key_t *requested = key;
+                const omap_key_t *found = k_ptr;
+
+                if (le64toh(requested->ok_oid) != le64toh(found->ok_oid) ||
+                    le64toh(found->ok_xid) > le64toh(requested->ok_xid))
+                    return ENOENT;
+            } else if ((*(uint64_t *)key & OBJ_TYPE_MASK) == APFS_TYPE_EXTENT) {
                 if (*(uint64_t *)key < *(uint64_t *)k_ptr) return ENOENT;
             } else {
                 if (*(uint64_t *)key != *(uint64_t *)k_ptr) return ENOENT;
@@ -207,7 +276,8 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *k
             return 0;
         } else {
             /* Internal node: go down */
-            paddr = *(apfs_paddr_t *)((uint8_t *)node + node->btn_table_space_off + toc[mid].val_off);
+            paddr = (apfs_paddr_t)le64toh(*(uint64_t *)
+                ((uint8_t *)node + node->btn_table_space_off + toc[mid].val_off));
             brelse(bp, 0);
         }
     }
