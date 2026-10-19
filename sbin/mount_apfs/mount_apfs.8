@@ -29,6 +29,11 @@ See the
 .Xr mount 8
 man page for possible options and their meanings.
 .El
+.Sh NOTES
+The APFS implementation is read-only. It validates sealed-volume integrity
+metadata and hashes for hashed file-system B-tree nodes, but does not yet
+support encrypted objects or file-data hash verification. A volume whose
+required metadata is encrypted cannot be mounted.
 .Sh SEE ALSO
 .Xr mount 2 ,
 .Xr mount 8

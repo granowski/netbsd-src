@@ -5,7 +5,60 @@
 #include <sys/endian.h>
 #include <sys/buf.h>
 #include <sys/kmem.h>
+#include <sys/sha2.h>
 #include <fs/apfs/apfs.h>
+
+int
+apfs_hash_data(struct apfsmount *amp, const void *data, size_t len,
+    uint8_t digest[BTREE_NODE_HASH_SIZE_MAX])
+{
+	uint8_t full_digest[SHA512_DIGEST_LENGTH];
+	SHA256_CTX sha256;
+	SHA384_CTX sha384;
+	SHA512_CTX sha512;
+
+	memset(digest, 0, BTREE_NODE_HASH_SIZE_MAX);
+	switch (amp->am_hash_type) {
+	case APFS_HASH_SHA256:
+		SHA256_Init(&sha256);
+		SHA256_Update(&sha256, data, len);
+		SHA256_Final(digest, &sha256);
+		explicit_memset(&sha256, 0, sizeof(sha256));
+		return 0;
+	case APFS_HASH_SHA512_256:
+		/* SHA-512/256 uses the SHA-512 compression function with its own IV. */
+		SHA512_Init(&sha512);
+		sha512.state[0] = UINT64_C(0x22312194fc2bf72c);
+		sha512.state[1] = UINT64_C(0x9f555fa3c84c64c2);
+		sha512.state[2] = UINT64_C(0x2393b86b6f53b151);
+		sha512.state[3] = UINT64_C(0x963877195940eabd);
+		sha512.state[4] = UINT64_C(0x96283ee2a88effe3);
+		sha512.state[5] = UINT64_C(0xbe5e1e2553863992);
+		sha512.state[6] = UINT64_C(0x2b0199fc2c85b8aa);
+		sha512.state[7] = UINT64_C(0x0eb72ddc81c52ca2);
+		SHA512_Update(&sha512, data, len);
+		SHA512_Final(full_digest, &sha512);
+		memcpy(digest, full_digest, SHA256_DIGEST_LENGTH);
+		explicit_memset(&sha512, 0, sizeof(sha512));
+		explicit_memset(full_digest, 0, sizeof(full_digest));
+		return 0;
+	case APFS_HASH_SHA384:
+		SHA384_Init(&sha384);
+		SHA384_Update(&sha384, data, len);
+		SHA384_Final(digest, &sha384);
+		explicit_memset(&sha384, 0, sizeof(sha384));
+		return 0;
+	case APFS_HASH_SHA512:
+		SHA512_Init(&sha512);
+		SHA512_Update(&sha512, data, len);
+		SHA512_Final(digest, &sha512);
+		explicit_memset(&sha512, 0, sizeof(sha512));
+		return 0;
+	default:
+		explicit_memset(full_digest, 0, sizeof(full_digest));
+		return EOPNOTSUPP;
+	}
+}
 
 /* Fletcher 64 checksum implementation for APFS */
 uint64_t
@@ -316,6 +369,16 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
     error = apfs_btree_search(amp, 0, tree_oid, &key, sizeof(key), &val,
         sizeof(val), NULL, 0);
     if (error == 0) {
+        uint32_t flags = le32toh(val.ov_flags);
+
+        if (flags & OMAP_VAL_DELETED)
+            return ENOENT;
+        if (flags & OMAP_VAL_ENCRYPTED) {
+            printf("apfs_omap_lookup: encrypted object 0x%llx requires "
+                "key-based decryption, which is not available\n",
+                (unsigned long long)oid);
+            return EOPNOTSUPP;
+        }
         *paddrp = (apfs_paddr_t)le64toh((uint64_t)val.ov_paddr);
     } else {
         printf("apfs_omap_lookup: tree at APFS block %llu has no mapping "
@@ -483,9 +546,13 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
     apfs_paddr_t paddr;
     btree_info_t info;
     uint32_t tree_flags = 0;
+    uint32_t tree_subtype = 0;
     bool have_info = false;
     uint64_t node_limit = 0;
     uint64_t steps = 0;
+    uint8_t expected_hash[BTREE_NODE_HASH_SIZE_MAX];
+    uint8_t calculated_hash[BTREE_NODE_HASH_SIZE_MAX];
+    bool have_expected_hash = false;
     int error;
 
     if (key_len == 0 || key_len > amp->am_block_size || val == NULL ||
@@ -509,47 +576,67 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
         if (error) return error;
 
         node = (btree_node_phys_t *)bp->b_data;
-        if (!apfs_checksum_valid(amp, node)) {
-            uint64_t stored_cksum;
-            memcpy(&stored_cksum, node->btn_o.o_cksum,
-                sizeof(stored_cksum));
-            printf("apfs_btree_search: checksum mismatch at APFS block %lld "
-                "(block size %u): calculated 0x%016llx, disk 0x%016llx; "
-                "object oid 0x%llx xid 0x%llx type 0x%08x\n",
-                (long long)paddr, amp->am_block_size,
-                (unsigned long long)apfs_fletcher64(node,
-                amp->am_block_size),
-                (unsigned long long)stored_cksum,
-                (unsigned long long)le64toh(node->btn_o.o_oid),
-                (unsigned long long)le64toh(node->btn_o.o_xid),
-                le32toh(node->btn_o.o_type));
-            brelse(bp, 0);
-            return EINVAL;
-        }
-
         uint16_t node_flags = le16toh(node->btn_flags);
         uint32_t node_type = le32toh(node->btn_o.o_type) &
             OBJECT_TYPE_MASK;
         uint32_t nkeys = le32toh(node->btn_nkeys);
         if ((node_flags & BTNODE_ROOT) != 0) {
-            if (node_type != OBJ_BTREE) {
-                brelse(bp, 0);
-                return EINVAL;
-            }
             memcpy(&info, (uint8_t *)node + amp->am_block_size -
                 sizeof(info), sizeof(info));
             tree_flags = le32toh(info.bt_flags);
             node_limit = le64toh(info.bt_node_count);
             have_info = true;
+            tree_subtype = (node_flags & BTNODE_NOHEADER) ?
+                OBJ_FSTREE : le32toh(node->btn_o.o_subtype);
             if ((tree_flags & (BTREE_PHYSICAL | BTREE_EPHEMERAL)) ==
                 (BTREE_PHYSICAL | BTREE_EPHEMERAL) ||
-                (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) != 0 ||
+                ((tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) != 0 &&
+                (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) !=
+                (BTREE_HASHED | BTREE_NOHEADER)) ||
                 le32toh(info.bt_node_size) != amp->am_block_size ||
                 node_limit == 0) {
                 brelse(bp, 0);
                 return EOPNOTSUPP;
             }
-        } else if (node_type != OBJ_BTREE_NODE || !have_info) {
+            if ((tree_flags & BTREE_HASHED) != 0) {
+                if (!amp->am_sealed ||
+                    (node_flags & BTNODE_NOHEADER) == 0) {
+                    brelse(bp, 0);
+                    return EOPNOTSUPP;
+                }
+                memcpy(expected_hash, amp->am_root_hash,
+                    sizeof(expected_hash));
+                have_expected_hash = true;
+            } else if ((node_flags & BTNODE_NOHEADER) != 0 ||
+                node_type != OBJ_BTREE) {
+                brelse(bp, 0);
+                return EINVAL;
+            }
+        } else if (!have_info ||
+            (((tree_flags & BTREE_HASHED) == 0) &&
+            node_type != OBJ_BTREE_NODE) ||
+            (((tree_flags & BTREE_HASHED) != 0) &&
+            ((node_flags & BTNODE_NOHEADER) == 0))) {
+            brelse(bp, 0);
+            return EINVAL;
+        }
+        if ((tree_flags & BTREE_HASHED) != 0 &&
+            (node_flags & BTNODE_LEAF) == 0 &&
+            (node_flags & BTNODE_HASHED) == 0) {
+            brelse(bp, 0);
+            return EINVAL;
+        }
+        if ((tree_flags & BTREE_HASHED) != 0) {
+            if (!have_expected_hash ||
+                apfs_hash_data(amp, node, amp->am_block_size,
+                calculated_hash) != 0 ||
+                memcmp(calculated_hash, expected_hash,
+                amp->am_hash_size) != 0) {
+                brelse(bp, 0);
+                return EAUTH;
+            }
+            have_expected_hash = false;
+        } else if (!apfs_checksum_valid(amp, node)) {
             brelse(bp, 0);
             return EINVAL;
         }
@@ -571,7 +658,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 brelse(bp, 0);
                 return error;
             }
-            cmp = apfs_key_compare(le32toh(node->btn_o.o_subtype),
+            cmp = apfs_key_compare(tree_subtype,
                 key, key_len, k_ptr, k_len);
             
             if (cmp == 0) {
@@ -607,7 +694,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 memcpy(found_key, k_ptr, k_len);
             }
             int match_error = 0;
-            if ((le32toh(node->btn_o.o_subtype) & OBJECT_TYPE_MASK) ==
+            if ((tree_subtype & OBJECT_TYPE_MASK) ==
                 OBJ_OMAP) {
                 const omap_key_t *requested = key;
                 const omap_key_t *found = k_ptr;
@@ -618,12 +705,12 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             } else if ((le64toh(*(uint64_t *)key) & OBJ_TYPE_MASK) ==
                 APFS_TYPE_EXTENT) {
                 if (apfs_key_compare(
-                    le32toh(node->btn_o.o_subtype), key, key_len, k_ptr,
+                    tree_subtype, key, key_len, k_ptr,
                     k_len) < 0)
                     match_error = ENOENT;
             } else {
                 if (apfs_key_compare(
-                    le32toh(node->btn_o.o_subtype), key, key_len, k_ptr,
+                    tree_subtype, key, key_len, k_ptr,
                     k_len) != 0)
                     match_error = ENOENT;
             }
@@ -633,11 +720,19 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             mid = (low > 0) ? low - 1 : 0;
             error = apfs_btree_entry(amp, node, &info, mid, &k_ptr,
                 &k_len, &v_ptr, &v_len);
-            if (error != 0 || v_len < sizeof(oid_t)) {
+            if (error != 0 ||
+                v_len < ((tree_flags & BTREE_HASHED) != 0 ?
+                sizeof(btree_index_node_val_t) : sizeof(oid_t))) {
                 brelse(bp, 0);
                 return error != 0 ? error : EINVAL;
             }
             oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
+            if ((tree_flags & BTREE_HASHED) != 0) {
+                const btree_index_node_val_t *index_val = v_ptr;
+                memcpy(expected_hash, index_val->child_hash,
+                    sizeof(expected_hash));
+                have_expected_hash = true;
+            }
             brelse(bp, 0);
             error = apfs_btree_resolve_child(amp, omap_oid, tree_flags,
                 child_oid, &paddr);
@@ -655,17 +750,21 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
     apfs_paddr_t paddr;
     btree_info_t info;
     uint32_t tree_flags = 0;
+    uint32_t tree_subtype = 0;
     bool have_info = false;
+    uint8_t expected_hash[BTREE_NODE_HASH_SIZE_MAX];
+    uint8_t calculated_hash[BTREE_NODE_HASH_SIZE_MAX];
+    bool have_expected_hash = false;
     int error, i;
     size_t current_k_len = key_len;
+
+    if (key_len > amp->am_block_size)
+        return EINVAL;
+
     void *found_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
     void *current_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
     void *current_v = kmem_alloc(amp->am_block_size, KM_SLEEP);
-    
-    if (key_len > amp->am_block_size) {
-        error = EINVAL;
-        goto out_noalloc;
-    }
+
     memcpy(current_k, start_key, key_len);
 
     while (1) {
@@ -690,35 +789,71 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
             error = apfs_bread(amp, paddr, &bp);
             if (error) goto out;
             node = (btree_node_phys_t *)bp->b_data;
-            if (!apfs_checksum_valid(amp, node)) {
-                brelse(bp, 0);
-                error = EINVAL;
-                goto out;
-            }
             uint16_t node_flags = le16toh(node->btn_flags);
             if (node_flags & BTNODE_ROOT) {
-                if ((le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) !=
-                    OBJ_BTREE) {
-                    brelse(bp, 0);
-                    error = EINVAL;
-                    goto out;
-                }
                 memcpy(&info, (uint8_t *)node + amp->am_block_size -
                     sizeof(info), sizeof(info));
                 tree_flags = le32toh(info.bt_flags);
+                tree_subtype = (node_flags & BTNODE_NOHEADER) ?
+                    OBJ_FSTREE : le32toh(node->btn_o.o_subtype);
                 have_info = true;
                 if ((tree_flags & (BTREE_PHYSICAL | BTREE_EPHEMERAL)) ==
                     (BTREE_PHYSICAL | BTREE_EPHEMERAL) ||
-                    (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) != 0 ||
+                    (((tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) != 0) &&
+                    (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) !=
+                    (BTREE_HASHED | BTREE_NOHEADER)) ||
                     le32toh(info.bt_node_size) != amp->am_block_size ||
                     le64toh(info.bt_node_count) == 0) {
                     brelse(bp, 0);
                     error = EOPNOTSUPP;
                     goto out;
                 }
+                if ((tree_flags & BTREE_HASHED) != 0) {
+                    if (!amp->am_sealed ||
+                        (node_flags & BTNODE_NOHEADER) == 0) {
+                        brelse(bp, 0);
+                        error = EOPNOTSUPP;
+                        goto out;
+                    }
+                    memcpy(expected_hash, amp->am_root_hash,
+                        sizeof(expected_hash));
+                    have_expected_hash = true;
+                } else if ((node_flags & BTNODE_NOHEADER) != 0 ||
+                    (le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) !=
+                    OBJ_BTREE) {
+                    brelse(bp, 0);
+                    error = EINVAL;
+                    goto out;
+                }
             } else if (!have_info ||
+                (((tree_flags & BTREE_HASHED) == 0) &&
                 (le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) !=
-                OBJ_BTREE_NODE) {
+                OBJ_BTREE_NODE) ||
+                (((tree_flags & BTREE_HASHED) != 0) &&
+                ((node_flags & BTNODE_NOHEADER) == 0))) {
+                brelse(bp, 0);
+                error = EINVAL;
+                goto out;
+            }
+            if ((tree_flags & BTREE_HASHED) != 0 &&
+                (node_flags & BTNODE_LEAF) == 0 &&
+                (node_flags & BTNODE_HASHED) == 0) {
+                brelse(bp, 0);
+                error = EINVAL;
+                goto out;
+            }
+            if ((tree_flags & BTREE_HASHED) != 0) {
+                if (!have_expected_hash ||
+                    apfs_hash_data(amp, node, amp->am_block_size,
+                    calculated_hash) != 0 ||
+                    memcmp(calculated_hash, expected_hash,
+                    amp->am_hash_size) != 0) {
+                    brelse(bp, 0);
+                    error = EAUTH;
+                    goto out;
+                }
+                have_expected_hash = false;
+            } else if (!apfs_checksum_valid(amp, node)) {
                 brelse(bp, 0);
                 error = EINVAL;
                 goto out;
@@ -738,7 +873,7 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
                     brelse(bp, 0);
                     goto out;
                 }
-                if (apfs_key_compare(le32toh(node->btn_o.o_subtype),
+                if (apfs_key_compare(tree_subtype,
                     current_k, current_k_len, k_ptr, k_len) < 0)
                     high = mid - 1;
                 else
@@ -749,13 +884,21 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
             size_t k_len, v_len;
             error = apfs_btree_entry(amp, node, &info, i, &k_ptr,
                 &k_len, &v_ptr, &v_len);
-            if (error || v_len < sizeof(oid_t)) {
+            if (error ||
+                v_len < ((tree_flags & BTREE_HASHED) != 0 ?
+                sizeof(btree_index_node_val_t) : sizeof(oid_t))) {
                 brelse(bp, 0);
                 if (error == 0)
                     error = EINVAL;
                 goto out;
             }
             oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
+            if ((tree_flags & BTREE_HASHED) != 0) {
+                const btree_index_node_val_t *index_val = v_ptr;
+                memcpy(expected_hash, index_val->child_hash,
+                    sizeof(expected_hash));
+                have_expected_hash = true;
+            }
             brelse(bp, 0);
             error = apfs_btree_resolve_child(amp, omap_oid, tree_flags,
                 child_oid, &paddr);
@@ -775,7 +918,7 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
                 goto out;
             }
             
-            if (apfs_key_compare(le32toh(node->btn_o.o_subtype),
+            if (apfs_key_compare(tree_subtype,
                 k_ptr, k_len, current_k, current_k_len) < 0)
                 continue;
 
@@ -800,7 +943,6 @@ out:
     kmem_free(found_k, amp->am_block_size);
     kmem_free(current_k, amp->am_block_size);
     kmem_free(current_v, amp->am_block_size);
-out_noalloc:
     return error;
 }
 

@@ -69,6 +69,93 @@ apfs_modcmd(modcmd_t modcmd, void *arg)
 	return error;
 }
 
+static int
+apfs_load_integrity(struct apfsmount *amp)
+{
+	integrity_meta_phys_t *meta;
+	struct buf *bp;
+	apfs_paddr_t paddr;
+	uint32_t version, hash_type, hash_size, hash_offset, flags;
+	uint8_t calculated_hash[BTREE_NODE_HASH_SIZE_MAX];
+	int error;
+
+	amp->am_sealed = false;
+	amp->am_hash_type = 0;
+	amp->am_hash_size = 0;
+	explicit_memset(amp->am_root_hash, 0, sizeof(amp->am_root_hash));
+	if ((le64toh(amp->am_sb.apfs_incompatible_features) &
+	    APFS_INCOMPAT_SEALED_VOLUME) == 0)
+		return 0;
+
+	if (le16toh(amp->am_sb.apfs_role) != APFS_VOL_ROLE_SYSTEM ||
+	    le64toh(amp->am_sb.apfs_integrity_meta_oid) == 0 ||
+	    le64toh(amp->am_sb.apfs_fext_tree_oid) == 0)
+		return EINVAL;
+
+	error = apfs_omap_lookup(amp,
+	    le64toh(amp->am_sb.apfs_omap_oid),
+	    le64toh(amp->am_sb.apfs_integrity_meta_oid),
+	    amp->am_checkpoint_xid, &paddr);
+	if (error != 0)
+		return error;
+	error = apfs_bread(amp, paddr, &bp);
+	if (error != 0)
+		return error;
+
+	meta = (integrity_meta_phys_t *)bp->b_data;
+	if (!apfs_checksum_valid(amp, meta) ||
+	    le64toh(meta->im_o.o_oid) !=
+	    le64toh(amp->am_sb.apfs_integrity_meta_oid) ||
+	    (le32toh(meta->im_o.o_type) & OBJECT_TYPE_MASK) !=
+	    OBJECT_TYPE_INTEGRITY_META) {
+		brelse(bp, 0);
+		return EINVAL;
+	}
+
+	version = le32toh(meta->im_version);
+	flags = le32toh(meta->im_flags);
+	hash_type = le32toh(meta->im_hash_type);
+	hash_offset = le32toh(meta->im_root_hash_offset);
+	switch (hash_type) {
+	case APFS_HASH_SHA256:
+	case APFS_HASH_SHA512_256:
+		hash_size = 32;
+		break;
+	case APFS_HASH_SHA384:
+		hash_size = 48;
+		break;
+	case APFS_HASH_SHA512:
+		hash_size = 64;
+		break;
+	default:
+		brelse(bp, 0);
+		return EOPNOTSUPP;
+	}
+	if (flags & APFS_SEAL_BROKEN) {
+		brelse(bp, 0);
+		return EAUTH;
+	}
+	if ((version != INTEGRITY_META_VERSION_1 &&
+	    version != INTEGRITY_META_VERSION_2) ||
+	    hash_offset < sizeof(*meta) ||
+	    hash_offset > amp->am_block_size ||
+	    hash_size > amp->am_block_size - hash_offset) {
+		brelse(bp, 0);
+		return EINVAL;
+	}
+
+	amp->am_hash_type = hash_type;
+	amp->am_hash_size = hash_size;
+	memcpy(amp->am_root_hash, (uint8_t *)meta + hash_offset, hash_size);
+	amp->am_sealed = true;
+	brelse(bp, 0);
+
+	/* Ensure the selected hash algorithm is available before tree traversal. */
+	error = apfs_hash_data(amp, "", 0, calculated_hash);
+	explicit_memset(calculated_hash, 0, sizeof(calculated_hash));
+	return error;
+}
+
 int
 apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 {
@@ -281,6 +368,23 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		memcpy(&amp->am_sb, vsb, sizeof(*vsb));
 		brelse(bp, 0);
 
+		if ((le64toh(amp->am_sb.apfs_fs_flags) &
+		    APFS_FS_UNENCRYPTED) == 0) {
+			printf("apfs_mount: encrypted filesystem OID 0x%llx is "
+			    "not supported yet\n",
+			    (unsigned long long)fs_oid);
+			error = EOPNOTSUPP;
+			continue;
+		}
+
+		error = apfs_load_integrity(amp);
+		if (error != 0) {
+			printf("apfs_mount: cannot validate sealed-volume metadata "
+			    "for filesystem OID 0x%llx: error %d\n",
+			    (unsigned long long)fs_oid, error);
+			continue;
+		}
+
 		apfs_paddr_t root_paddr;
 		struct buf *root_bp;
 		error = apfs_omap_lookup(amp,
@@ -298,24 +402,49 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		if (error != 0)
 			continue;
 		btree_node_phys_t *root = (btree_node_phys_t *)root_bp->b_data;
+		uint16_t root_flags = le16toh(root->btn_flags);
 		btree_info_t root_info;
 		memcpy(&root_info, (uint8_t *)root + amp->am_block_size -
 		    sizeof(root_info), sizeof(root_info));
-		if (!apfs_checksum_valid(amp, root_bp->b_data) ||
+		uint32_t tree_flags = le32toh(root_info.bt_flags);
+		bool hashed = (tree_flags & BTREE_HASHED) != 0;
+		uint8_t root_hash[BTREE_NODE_HASH_SIZE_MAX];
+		error = 0;
+		if (hashed) {
+			error = (!amp->am_sealed ||
+			    (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) !=
+			    (BTREE_HASHED | BTREE_NOHEADER) ||
+			    (root_flags & BTNODE_NOHEADER) == 0) ? EINVAL :
+			    apfs_hash_data(amp, root, amp->am_block_size,
+			    root_hash);
+			if (error == 0 &&
+			    memcmp(root_hash, amp->am_root_hash,
+			    amp->am_hash_size) != 0)
+				error = EAUTH;
+		} else if (amp->am_sealed ||
+		    (root_flags & BTNODE_NOHEADER) != 0 ||
+		    !apfs_checksum_valid(amp, root_bp->b_data) ||
 		    (le32toh(root->btn_o.o_type) & OBJECT_TYPE_MASK) !=
-		    OBJ_BTREE ||
+		    OBJ_BTREE) {
+			error = EINVAL;
+		}
+		if (error != 0 ||
 		    (le16toh(root->btn_flags) & BTNODE_ROOT) == 0 ||
-		    le32toh(root->btn_o.o_subtype) != OBJ_FSTREE ||
+		    (!hashed && le32toh(root->btn_o.o_subtype) != OBJ_FSTREE) ||
 		    le32toh(root_info.bt_node_size) != amp->am_block_size ||
 		    le64toh(root_info.bt_node_count) == 0) {
+			if (error == 0)
+				error = EINVAL;
+			explicit_memset(root_hash, 0, sizeof(root_hash));
 			brelse(root_bp, 0);
 			printf("apfs_mount: invalid root file-system tree node at "
-			    "APFS block %lld\n", (long long)root_paddr);
-			error = EINVAL;
+			    "APFS block %lld: error %d\n",
+			    (long long)root_paddr, error);
 			continue;
 		}
-		if ((le32toh(root_info.bt_flags) &
-		    (BTREE_HASHED | BTREE_NOHEADER)) != 0 ||
+		if ((tree_flags & BTREE_NOHEADER) != (hashed ?
+		    BTREE_NOHEADER : 0) ||
+		    (hashed && !amp->am_sealed) ||
 		    (le32toh(root_info.bt_flags) &
 		    (BTREE_PHYSICAL | BTREE_EPHEMERAL)) ==
 		    (BTREE_PHYSICAL | BTREE_EPHEMERAL)) {
@@ -325,6 +454,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 			error = EOPNOTSUPP;
 			continue;
 		}
+		explicit_memset(root_hash, 0, sizeof(root_hash));
 		brelse(root_bp, 0);
 		error = 0;
 		break;

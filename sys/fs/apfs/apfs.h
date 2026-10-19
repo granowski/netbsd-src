@@ -14,7 +14,18 @@ typedef int64_t  apfs_paddr_t;
 typedef uint64_t oid_t;
 typedef uint64_t xid_t;
 
+typedef struct prange {
+    apfs_paddr_t pr_start_paddr;
+    uint64_t pr_block_count;
+} prange_t;
+
 #define MAX_CKSUM_SIZE 8
+#define NX_NUM_COUNTERS 32
+#define NX_EPH_INFO_COUNT 4
+#define APFS_MAX_HIST 8
+#define APFS_VOLNAME_LEN 256
+#define APFS_MODIFIED_NAMELEN 32
+#define BTREE_NODE_HASH_SIZE_MAX 64
 
 /* Object Header */
 typedef struct obj_phys {
@@ -74,10 +85,47 @@ typedef struct nx_superblock {
     uint32_t   nx_test_type;
     uint32_t   nx_max_file_systems;
     oid_t      nx_fs_oid[NX_MAX_FILE_SYSTEMS];
+    uint64_t   nx_counters[NX_NUM_COUNTERS];
+    prange_t   nx_blocked_out_prange;
+    oid_t      nx_evict_mapping_tree_oid;
+    uint64_t   nx_flags;
+    apfs_paddr_t nx_efi_jumpstart;
+    struct uuid nx_fusion_uuid;
+    prange_t   nx_keylocker;
+    uint64_t   nx_ephemeral_info[NX_EPH_INFO_COUNT];
+    oid_t      nx_test_oid;
+    oid_t      nx_fusion_mt_oid;
+    oid_t      nx_fusion_wbc_oid;
+    prange_t   nx_fusion_wbc;
+    uint64_t   nx_newest_mounted_version;
+    prange_t   nx_mkb_locker;
 } nx_superblock_t;
 
 /* Volume Superblock */
 #define APFS_MAGIC 0x42535041
+#define APFS_FS_UNENCRYPTED 0x00000001
+#define APFS_FS_ONEKEY 0x00000008
+#define APFS_INCOMPAT_SEALED_VOLUME 0x00000020
+#define APFS_SEAL_BROKEN 0x00000001
+
+#define APFS_HASH_SHA256       0x00000001
+#define APFS_HASH_SHA512_256   0x00000002
+#define APFS_HASH_SHA384       0x00000003
+#define APFS_HASH_SHA512       0x00000004
+#define APFS_VOL_ROLE_SYSTEM   0x0001
+#define INTEGRITY_META_VERSION_1 1
+#define INTEGRITY_META_VERSION_2 2
+#define OBJECT_TYPE_INTEGRITY_META 0x0000001e
+
+typedef struct integrity_meta_phys {
+    obj_phys_t im_o;
+    uint32_t im_version;
+    uint32_t im_flags;
+    uint32_t im_hash_type;
+    uint32_t im_root_hash_offset;
+    xid_t im_broken_xid;
+    uint64_t im_reserved[9];
+} __attribute__((packed)) integrity_meta_phys_t;
 
 typedef struct apfs_crypto_state {
     uint16_t major_version;
@@ -121,6 +169,27 @@ typedef struct apfs_superblock {
     struct uuid apfs_vol_uuid;
     uint64_t   apfs_last_mod_time;
     uint64_t   apfs_fs_flags;
+    struct apfs_modified_by {
+        uint8_t id[APFS_MODIFIED_NAMELEN];
+        uint64_t timestamp;
+        xid_t last_xid;
+    } apfs_formatted_by;
+    struct apfs_modified_by apfs_modified_by[APFS_MAX_HIST];
+    uint8_t    apfs_volname[APFS_VOLNAME_LEN];
+    uint32_t   apfs_next_doc_id;
+    uint16_t   apfs_role;
+    uint16_t   apfs_reserved;
+    xid_t      apfs_root_to_xid;
+    oid_t      apfs_er_state_oid;
+    uint64_t   apfs_cloneinfo_id_epoch;
+    uint64_t   apfs_cloneinfo_xid;
+    oid_t      apfs_snap_meta_ext_oid;
+    struct uuid apfs_volume_group_id;
+    oid_t      apfs_integrity_meta_oid;
+    oid_t      apfs_fext_tree_oid;
+    uint32_t   apfs_fext_tree_type;
+    uint32_t   apfs_reserved_type;
+    oid_t      apfs_reserved_oid;
 } apfs_superblock_t;
 
 /* Object Map */
@@ -146,6 +215,12 @@ typedef struct omap_val {
     uint32_t ov_size;
     apfs_paddr_t  ov_paddr;
 } omap_val_t;
+
+#define OMAP_VAL_DELETED       0x00000001
+#define OMAP_VAL_SAVED         0x00000002
+#define OMAP_VAL_ENCRYPTED     0x00000004
+#define OMAP_VAL_NOHEADER      0x00000008
+#define OMAP_VAL_CRYPTO_GENERATION 0x00000010
 
 /* Checkpoint Mapping */
 typedef struct checkpoint_mapping {
@@ -208,8 +283,11 @@ typedef struct btree_node_phys {
 #define BTNODE_FIXED_KV_SIZE  0x0004
 #define BTREE_EPHEMERAL        0x00000008
 #define BTREE_PHYSICAL         0x00000010
-#define BTREE_NOHEADER         0x00000040
+#define BTREE_KV_NONALIGNED    0x00000040
 #define BTREE_HASHED           0x00000080
+#define BTREE_NOHEADER         0x00000100
+#define BTNODE_HASHED          0x0008
+#define BTNODE_NOHEADER        0x0010
 
 /* File-System Records */
 #define APFS_TYPE_ANY       0x0
@@ -314,7 +392,7 @@ typedef struct btree_info {
 
 typedef struct btree_index_node_val {
     oid_t child_oid;
-    uint8_t child_hash[64];
+    uint8_t child_hash[BTREE_NODE_HASH_SIZE_MAX];
 } btree_index_node_val_t;
 
 /* NetBSD Internal Structures */
@@ -334,6 +412,10 @@ struct apfsmount {
     apfs_superblock_t am_sb;
     uint32_t         am_desc_blocks;
     uint64_t         am_checkpoint_xid;
+    uint32_t         am_hash_type;
+    uint32_t         am_hash_size;
+    uint8_t          am_root_hash[BTREE_NODE_HASH_SIZE_MAX];
+    bool             am_sealed;
     kmutex_t         am_lock;
     struct vnode    *am_rootvp;
 };
@@ -375,6 +457,8 @@ int apfs_omap_update(struct apfsmount *, oid_t, xid_t, apfs_paddr_t);
 
 /* Checksum */
 uint64_t apfs_fletcher64(const void *, size_t);
+int apfs_hash_data(struct apfsmount *, const void *, size_t,
+    uint8_t[BTREE_NODE_HASH_SIZE_MAX]);
 
 /* Vnode Operations */
 extern int (**apfs_vnodeop_p)(void *);
