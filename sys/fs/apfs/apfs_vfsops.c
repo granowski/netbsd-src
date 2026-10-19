@@ -75,7 +75,7 @@ apfs_load_integrity(struct apfsmount *amp)
 	integrity_meta_phys_t *meta;
 	struct buf *bp;
 	apfs_paddr_t paddr;
-	uint32_t version, hash_type, hash_size, hash_offset, flags;
+	uint32_t apfs_version, hash_type, hash_size, hash_offset, flags;
 	uint8_t calculated_hash[BTREE_NODE_HASH_SIZE_MAX];
 	int error;
 
