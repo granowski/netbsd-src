@@ -131,10 +131,21 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *k
         if (error) return error;
 
         node = (btree_node_phys_t *)bp->b_data;
-        if (apfs_fletcher64(node, amp->am_block_size) != le64toh(*(uint64_t *)node->btn_o.o_cksum)) {
-            printf("apfs_btree_search: checksum mismatch: calculated 0x%llx, disk 0x%llx\n",
-                (unsigned long long)apfs_fletcher64(node, amp->am_block_size),
-                (unsigned long long)le64toh(*(uint64_t *)node->btn_o.o_cksum));
+        uint64_t calculated_cksum, stored_cksum;
+
+        calculated_cksum = apfs_fletcher64(node, amp->am_block_size);
+        memcpy(&stored_cksum, node->btn_o.o_cksum, sizeof(stored_cksum));
+        stored_cksum = le64toh(stored_cksum);
+        if (calculated_cksum != stored_cksum) {
+            printf("apfs_btree_search: checksum mismatch at APFS block %lld "
+                "(block size %u): calculated 0x%016llx, disk 0x%016llx; "
+                "object oid 0x%llx xid 0x%llx type 0x%08x\n",
+                (long long)paddr, amp->am_block_size,
+                (unsigned long long)calculated_cksum,
+                (unsigned long long)stored_cksum,
+                (unsigned long long)le64toh(node->btn_o.o_oid),
+                (unsigned long long)le64toh(node->btn_o.o_xid),
+                le32toh(node->btn_o.o_type));
             brelse(bp, 0);
             return EINVAL;
         }
