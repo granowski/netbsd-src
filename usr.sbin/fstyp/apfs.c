@@ -26,6 +26,9 @@
 #include <sys/cdefs.h>
 __RCSID("$NetBSD: apfs.c,v 1.1 2019/12/27 11:15:06 tkusumi Exp $");
 
+#include <sys/param.h>
+#include <sys/endian.h>
+
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
@@ -37,64 +40,24 @@ __RCSID("$NetBSD: apfs.c,v 1.1 2019/12/27 11:15:06 tkusumi Exp $");
 
 #include "fstyp.h"
 
-/**
- * calculate_fletcher64_checksum: Computes the 64-bit Fletcher checksum for the given data.
- * @param data Pointer to the data buffer.
- * @param len Length of the data buffer in bytes.
- * @return The 64-bit Fletcher checksum.
- */
-uint64_t calculate_fletcher64_checksum(const void *data, size_t len)
+#define	NX_CKSUM_SZ		8
+
+static uint64_t
+apfs_fletcher64(const void *buf, size_t len)
 {
-    const uint8_t *buffer = (const uint8_t *)data;
-    uint32_t sum1 = 0;
-    uint32_t sum2 = 0;
+	const uint8_t *data = buf;
+	uint32_t sum1 = 0, sum2 = 0;
 
-    for (size_t i = 0; i < len; ++i) {
-        // Sum1 accumulates the sums of bytes (b_i)
-        sum1 = (sum1 + buffer[i]);
-        // Sum2 accumulates the sums of the first sum (sum1)
-        sum2 = (sum2 + sum1);
-    }
+	for (size_t off = NX_CKSUM_SZ; off < len; off += sizeof(uint32_t)) {
+		uint32_t word;
 
-    // Combine the two 32-bit sums into a single 64-bit result.
-    return ((uint64_t)sum2 << 32) | sum1;
+		memcpy(&word, data + off, sizeof(word));
+		sum1 += le32toh(word);
+		sum2 += sum1;
+	}
+
+	return ((uint64_t)sum2 << 32) | sum1;
 }
-
-/**
- * checksum_validate_superblock: Validates the integrity of the Superblock using checksums.
- * @param csb The structure containing the Superblock data.
- * @return 0 on success, non-zero on failure.
- */
-int checksum_validate_superblock(struct nx_superblock *csb)
-{
-    /*
-     * Validation based on spec: The checksum covers all fields of the object metadata
-     * (nx_o) EXCEPT for the space reserved for the checksum itself.
-     * 1. Determine Payload Size: The checksum payload size is the offset of o_cksum
-     *    within the nx_o object structure.
-     */
-
-    // 1. Calculate Payload Size: This is the offset of o_cksum within nx_o.
-    const size_t payload_size = offsetof(struct nx_obj, o_cksum);
-
-    // 2. Calculate Checksum: Use the Fletcher-64 algorithm on the payload region.
-    uint64_t calculated_cksum = calculate_fletcher64_checksum(&csb->nx_o, payload_size);
-
-    // 3. Compare: Extract the stored checksum and compare.
-    uint64_t stored_cksum;
-    // Copy the 8 bytes from the o_cksum field into our comparison variable.
-    memcpy(&stored_cksum, &csb->nx_o.o_cksum, 8);
-
-    if (calculated_cksum != stored_cksum) {
-        fprintf(stderr, "APFS Checksum Error: Superblock integrity failure detected.\n");
-        fprintf(stderr, "  Calculated Checksum: 0x%llX\n", (unsigned long long)calculated_cksum);
-        fprintf(stderr, "  Stored Checksum:    0x%llX\n", (unsigned long long)stored_cksum);
-        return EINVAL; // Indicates a checksum failure
-    }
-
-    return 0; // Success
-}
-
 
 /*
  * This really detects the container format, which might be best supported by
@@ -102,7 +65,9 @@ int checksum_validate_superblock(struct nx_superblock *csb)
  *
  * https://developer.apple.com/support/downloads/Apple-File-System-Reference.pdf
  */
-#define	NX_CKSUM_SZ		8
+#define	NX_MINIMUM_BLOCK_SIZE	4096
+#define	NX_MAXIMUM_BLOCK_SIZE	65536
+#define	NX_MAGIC		"NXSB"
 
 typedef uint64_t nx_oid_t;
 
@@ -133,30 +98,47 @@ struct nx_obj {
 #define	OBJ_NONPERSISTENT		0x08000000
 
 struct nx_superblock {
-    struct nx_obj	nx_o;
-    char		nx_magic[4];
-    /* ... other stuff that doesn't matter */
+	struct nx_obj	nx_o;
+	char		nx_magic[4];
+	uint32_t	nx_block_size;
 };
 
 int
 fstyp_apfs(FILE *fp, char *label, size_t size)
 {
-    struct nx_superblock *csb;
-    int retval;
+	struct nx_superblock *csb;
+	uint8_t *block;
+	uint32_t block_size;
+	uint64_t stored_cksum;
+	int retval;
 
-    retval = 1;
-    csb = read_buf(fp, 0, sizeof(*csb));
-    if (csb == NULL)
-        goto fail;
+	csb = read_buf(fp, 0, sizeof(*csb));
+	if (csb == NULL)
+		return (1);
 
-    if (checksum_validate_superblock(csb) != 0)
-        goto fail;
+	if (memcmp(csb->nx_magic, NX_MAGIC, sizeof(csb->nx_magic)) != 0 ||
+	    le64toh(csb->nx_o.o_oid) != OID_NX_SUPERBLOCK ||
+	    (le32toh(csb->nx_o.o_type) & OBJECT_TYPE_MASK) !=
+	    OBJECT_TYPE_NX_SUPERBLOCK) {
+		free(csb);
+		return (1);
+	}
 
-    retval = 0;
+	block_size = le32toh(csb->nx_block_size);
+	free(csb);
+	if (block_size < NX_MINIMUM_BLOCK_SIZE ||
+	    block_size > NX_MAXIMUM_BLOCK_SIZE ||
+	    block_size % sizeof(uint32_t) != 0)
+		return (1);
 
-    /* No label support yet. */
+	block = read_buf(fp, 0, block_size);
+	if (block == NULL)
+		return (1);
 
-fail:
-    free(csb);
-    return (retval);
+	memcpy(&stored_cksum, block, sizeof(stored_cksum));
+	retval = apfs_fletcher64(block, block_size) != le64toh(stored_cksum);
+	free(block);
+
+	/* No label support yet. */
+	return (retval);
 }
