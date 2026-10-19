@@ -2,6 +2,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
+#include <sys/endian.h>
 #include <sys/buf.h>
 #include <sys/kmem.h>
 #include <fs/apfs/apfs.h>
@@ -19,11 +20,28 @@ apfs_fletcher64(const void *buf, size_t len)
     count -= 2;
 
     for (size_t i = 0; i < count; i++) {
-        s1 += data[i];
+        s1 += le32toh(data[i]);
         s2 += s1;
     }
 
     return ((uint64_t)s2 << 32) | s1;
+}
+
+int
+apfs_bread(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
+{
+	uint64_t sectors_per_block, blkno;
+
+	if (paddr < 0 || amp->am_block_size < DEV_BSIZE ||
+	    amp->am_block_size % DEV_BSIZE != 0)
+		return EINVAL;
+
+	sectors_per_block = amp->am_block_size / DEV_BSIZE;
+	if ((uint64_t)paddr > (uint64_t)INT64_MAX / sectors_per_block)
+		return EOVERFLOW;
+	blkno = (uint64_t)paddr * sectors_per_block;
+
+	return bread(amp->am_devvp, (daddr_t)blkno, amp->am_block_size, 0, bpp);
 }
 
 /* OMap resolution: virtual OID -> physical block address */
@@ -109,7 +127,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *k
 
     /* 2. Read and traverse nodes */
     while (1) {
-        error = bread(amp->am_devvp, paddr, amp->am_block_size, 0, &bp);
+        error = apfs_bread(amp, paddr, &bp);
         if (error) return error;
 
         node = (btree_node_phys_t *)bp->b_data;
@@ -212,7 +230,7 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
         }
 
         while (1) {
-            error = bread(amp->am_devvp, paddr, amp->am_block_size, 0, &bp);
+            error = apfs_bread(amp, paddr, &bp);
             if (error) goto out;
             node = (btree_node_phys_t *)bp->b_data;
             if (node->btn_flags & BTNODE_LEAF) break;

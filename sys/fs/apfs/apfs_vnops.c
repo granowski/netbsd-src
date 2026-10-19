@@ -250,7 +250,7 @@ apfs_vop_read(void *v)
 		size_t n = MIN(uio->uio_resid, amp->am_block_size - off_in_block);
 		n = MIN(n, found_key.logical_addr + extent_len - uio->uio_offset);
 
-		error = bread(amp->am_devvp, phys_block, amp->am_block_size, 0, &bp);
+		error = apfs_bread(amp, phys_block, &bp);
 		if (error) break;
 
 		error = uiomove((uint8_t *)bp->b_data + off_in_block, n, uio);

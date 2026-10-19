@@ -79,6 +79,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	struct buf *bp;
 	nx_superblock_t *nx;
 	int error, mode;
+	uint32_t block_size;
 	dev_t dev;
 
 	if (args == NULL) {
@@ -145,13 +146,22 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		goto error_close;
 	}
 
+	block_size = le32toh(nx->nx_block_size);
+	if (block_size == 0)
+		block_size = 4096;
+	if (block_size < 4096 || block_size > 65536 ||
+	    block_size % DEV_BSIZE != 0) {
+		brelse(bp, 0);
+		error = EINVAL;
+		goto error_close;
+	}
+
 	/* 4. Allocate and initialize apfsmount */
 	amp = kmem_zalloc(sizeof(*amp), KM_SLEEP);
 	amp->am_mountp = mp;
 	amp->am_dev = dev;
 	amp->am_devvp = devvp;
-	amp->am_block_size = nx->nx_block_size;
-	if (amp->am_block_size == 0) amp->am_block_size = 4096;
+	amp->am_block_size = block_size;
 	amp->am_block_shift = ffs(amp->am_block_size) - 1;
 	memcpy(&amp->am_nx, nx, sizeof(*nx));
 	mutex_init(&amp->am_lock, MUTEX_DEFAULT, IPL_NONE);
@@ -160,13 +170,16 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 	/* 5. Find Volume Superblock */
 	error = ENOENT;
-	for (int i = 0; i < nx->nx_max_file_systems; i++) {
-		if (nx->nx_fs_oid[i] != 0) {
+	for (int i = 0; i < le32toh(amp->am_nx.nx_max_file_systems); i++) {
+		if (le64toh(amp->am_nx.nx_fs_oid[i]) != 0) {
 			apfs_paddr_t sb_paddr;
 			/* Look up volume superblock in container OMap */
-			error = apfs_omap_lookup(amp, amp->am_nx.nx_omap_oid, nx->nx_fs_oid[i], nx->nx_next_xid - 1, &sb_paddr);
+			error = apfs_omap_lookup(amp,
+			    le64toh(amp->am_nx.nx_omap_oid),
+			    le64toh(amp->am_nx.nx_fs_oid[i]),
+			    le64toh(amp->am_nx.nx_next_xid) - 1, &sb_paddr);
 			if (error == 0) {
-				error = bread(devvp, sb_paddr, amp->am_block_size, 0, &bp);
+				error = apfs_bread(amp, sb_paddr, &bp);
 				if (error == 0) {
 					apfs_superblock_t *vsb = (apfs_superblock_t *)bp->b_data;
 					if (le32toh(vsb->apfs_magic) == APFS_MAGIC) {

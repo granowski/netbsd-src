@@ -296,6 +296,7 @@ int apfs_btree_search(struct apfsmount *, oid_t, oid_t, void *, size_t, void *, 
 int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_btree_iter_cb, void *);
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
+int apfs_bread(struct apfsmount *, apfs_paddr_t, struct buf **);
 
 /* Space Manager Helpers */
 int apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
