@@ -169,18 +169,19 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 			checkpoint_mapping_t *entry = &map->cpm_map[j];
 			uint32_t size = le32toh(entry->cpm_size);
 			uint64_t oid = le64toh(entry->cpm_oid);
-			uint64_t paddr = le64toh((uint64_t)entry->cpm_paddr);
+			uint64_t mapping_paddr = le64toh(
+			    (uint64_t)entry->cpm_paddr);
 			uint32_t storage = le32toh(entry->cpm_type) &
 			    OBJ_STORAGE_MASK;
 			uint64_t blocks;
 
 			if (oid == 0 || size == 0 || storage != OBJ_EPHEMERAL ||
-			    paddr >= block_count) {
+			    mapping_paddr >= block_count) {
 				brelse(bp, 0);
 				return false;
 			}
 			blocks = howmany(size, amp->am_block_size);
-			if (blocks > block_count - paddr) {
+			if (blocks > block_count - mapping_paddr) {
 				brelse(bp, 0);
 				return false;
 			}
