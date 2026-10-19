@@ -79,7 +79,8 @@ apfs_vop_lookup(void *v)
 	key->name_len_and_hash = (uint32_t)cnp->cn_namelen & DREC_NLEN_MASK; /* TODO: Add hash */
 	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
 
-	error = apfs_btree_search(dnode->a_amp, dnode->a_amp->am_sb.apfs_root_tree_oid, key, &val, NULL);
+	error = apfs_btree_search(dnode->a_amp, dnode->a_amp->am_sb.apfs_omap_oid, 
+	    dnode->a_amp->am_sb.apfs_root_tree_oid, key, sizeof(*key) + cnp->cn_namelen, &val, NULL);
 	kmem_free(key, sizeof(*key) + cnp->cn_namelen);
 
 	if (error == 0) {
@@ -209,7 +210,8 @@ apfs_vop_read(void *v)
 		key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT;
 		key.logical_addr = uio->uio_offset;
 
-		error = apfs_btree_search(amp, amp->am_sb.apfs_root_tree_oid, &key, &val, &found_key);
+		error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, 
+		    amp->am_sb.apfs_root_tree_oid, &key, sizeof(key), &val, &found_key);
 		if (error) {
 			/* Hole */
 			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
@@ -396,8 +398,8 @@ apfs_vop_readdir(void *v)
 	memset(&start_key, 0, sizeof(start_key));
 	start_key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_DIR_REC;
 
-	error = apfs_btree_iterate(apnode->a_amp, apnode->a_amp->am_sb.apfs_root_tree_oid, 
-	    &start_key, apfs_readdir_cb, &ctx);
+	error = apfs_btree_iterate(apnode->a_amp, apnode->a_amp->am_sb.apfs_omap_oid,
+	    apnode->a_amp->am_sb.apfs_root_tree_oid, &start_key, sizeof(start_key), apfs_readdir_cb, &ctx);
 
 	if (error == EJUSTRETURN) error = 0;
 
@@ -419,9 +421,10 @@ apfs_vop_reclaim(void *v)
 	struct vnode *vp = ap->a_vp;
 	struct apfsnode *apnode = vp->v_data;
 
-	genfs_node_destroy(vp);
-	if (apnode)
+	if (apnode) {
+		genfs_node_destroy(vp);
 		kmem_free(apnode, sizeof(*apnode));
+	}
 	vp->v_data = NULL;
 
 	return 0;
@@ -480,7 +483,7 @@ apfs_vop_bmap(void *v)
 	key.obj_id_and_type = ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT;
 	key.logical_addr = (uint64_t)ap->a_bn * amp->am_block_size;
 
-	error = apfs_btree_search(amp, amp->am_sb.apfs_root_tree_oid, &key, &val, &found_key);
+	error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, amp->am_sb.apfs_root_tree_oid, &key, sizeof(key), &val, &found_key);
 	if (error) {
 		*ap->a_bnp = -1; /* Hole */
 		return 0;

@@ -149,7 +149,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		if (nx->nx_fs_oid[i] != 0) {
 			apfs_paddr_t sb_paddr;
 			/* Look up volume superblock in container OMap */
-			error = apfs_omap_lookup(amp, nx->nx_fs_oid[i], nx->nx_next_xid - 1, &sb_paddr);
+			error = apfs_omap_lookup(amp, amp->am_nx.nx_omap_oid, nx->nx_fs_oid[i], nx->nx_next_xid - 1, &sb_paddr);
 			if (error == 0) {
 				error = bread(devvp, sb_paddr, amp->am_block_size, 0, &bp);
 				if (error == 0) {
@@ -292,9 +292,10 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 
 	/* 2. Load inode from Root Tree */
 	key.obj_id_and_type = ((uint64_t)ino << 4) | APFS_TYPE_INODE;
-	error = apfs_btree_search(amp, amp->am_sb.apfs_root_tree_oid, &key, &val, NULL);
+	error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, amp->am_sb.apfs_root_tree_oid, &key, sizeof(key), &val, NULL);
 	if (error) {
 		vgone(vp);
+		vput(vp);
 		return error;
 	}
 

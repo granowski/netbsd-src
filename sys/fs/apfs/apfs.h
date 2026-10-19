@@ -292,8 +292,8 @@ VFS_PROTOS(apfs);
 
 /* B-Tree Helpers */
 typedef int (*apfs_btree_iter_cb)(void *, const void *, size_t, const void *, size_t);
-int apfs_btree_search(struct apfsmount *, oid_t, void *, void *, void *);
-int apfs_btree_iterate(struct apfsmount *, oid_t, void *, apfs_btree_iter_cb, void *);
+int apfs_btree_search(struct apfsmount *, oid_t, oid_t, void *, size_t, void *, void *);
+int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_btree_iter_cb, void *);
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
 
@@ -302,7 +302,7 @@ int apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
 int apfs_free_block(struct apfsmount *, apfs_paddr_t);
 
 /* OMap Helpers */
-int apfs_omap_lookup(struct apfsmount *, oid_t, xid_t, apfs_paddr_t *);
+int apfs_omap_lookup(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t *);
 int apfs_omap_update(struct apfsmount *, oid_t, xid_t, apfs_paddr_t);
 
 /* Checksum */

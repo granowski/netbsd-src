@@ -28,16 +28,18 @@ apfs_fletcher64(const void *buf, size_t len)
 
 /* OMap resolution: virtual OID -> physical block address */
 int
-apfs_omap_lookup(struct apfsmount *amp, oid_t oid, xid_t xid, apfs_paddr_t *paddrp)
+apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, apfs_paddr_t *paddrp)
 {
     omap_key_t key;
     omap_val_t val;
     int error;
 
+    if (omap_oid == 0) return EINVAL;
+
     key.ok_oid = oid;
     key.ok_xid = xid;
 
-    error = apfs_btree_search(amp, amp->am_sb.apfs_omap_oid, &key, &val, NULL);
+    error = apfs_btree_search(amp, omap_oid, omap_oid, &key, sizeof(key), &val, NULL);
     if (error == 0) {
         *paddrp = val.ov_paddr;
     }
@@ -57,6 +59,7 @@ apfs_key_compare(uint32_t type, const void *k1, size_t k1_len, const void *k2, s
     uint32_t subtype = kt1 & OBJ_TYPE_MASK;
 
     if (subtype == APFS_TYPE_DIR_REC) {
+        if (k1_len < 12 || k2_len < 12) return 0; /* Should not happen for full keys */
         const j_drec_key_t *dk1 = k1;
         const j_drec_key_t *dk2 = k2;
         uint32_t h1 = dk1->name_len_and_hash & DREC_HASH_MASK;
@@ -84,7 +87,7 @@ apfs_key_compare(uint32_t type, const void *k1, size_t k1_len, const void *k2, s
 
 /* B-Tree search implementation */
 int
-apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, void *found_key)
+apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *key, size_t key_len, void *val, void *found_key)
 {
     struct buf *bp;
     btree_node_phys_t *node;
@@ -92,11 +95,10 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
     int error;
 
     /* 1. Resolve tree root OID to physical address */
-    if (tree_oid == amp->am_nx.nx_omap_oid || 
-        (amp->am_sb.apfs_omap_oid != 0 && tree_oid == amp->am_sb.apfs_omap_oid)) {
+    if (tree_oid == omap_oid || omap_oid == 0) {
         paddr = tree_oid; 
     } else {
-        error = apfs_omap_lookup(amp, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
+        error = apfs_omap_lookup(amp, omap_oid, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
         if (error) {
             paddr = tree_oid; 
         }
@@ -123,7 +125,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
             mid = (low + high) / 2;
             k_ptr = (uint8_t *)node + node->btn_table_space_off + toc[mid].key_off;
             
-            cmp = apfs_key_compare(node->btn_o.o_type, key, 0, k_ptr, toc[mid].key_len);
+            cmp = apfs_key_compare(node->btn_o.o_type, key, key_len, k_ptr, toc[mid].key_len);
             
             if (cmp == 0) {
                 last_match = mid;
@@ -173,29 +175,34 @@ apfs_btree_search(struct apfsmount *amp, oid_t tree_oid, void *key, void *val, v
 }
 
 int
-apfs_btree_iterate(struct apfsmount *amp, oid_t tree_oid, void *start_key, apfs_btree_iter_cb cb, void *arg)
+apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *start_key, size_t key_len, apfs_btree_iter_cb cb, void *arg)
 {
     struct buf *bp;
     btree_node_phys_t *node;
     apfs_paddr_t paddr;
     int error, i;
+    size_t current_k_len = key_len;
     void *found_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
     void *current_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
     void *current_v = kmem_alloc(amp->am_block_size, KM_SLEEP);
     
-    memcpy(current_k, start_key, 8); /* At least OID/Type */
+    if (key_len > amp->am_block_size) {
+        error = EINVAL;
+        goto out_noalloc;
+    }
+    memcpy(current_k, start_key, key_len);
 
     while (1) {
         /* 1. Find the leaf node containing current_k */
         /* This is a bit inefficient but safe: we re-traverse for each leaf */
-        error = apfs_btree_search(amp, tree_oid, current_k, current_v, found_k);
+        error = apfs_btree_search(amp, omap_oid, tree_oid, current_k, current_k_len, current_v, found_k);
         if (error && error != ENOENT) goto out;
 
         /* Resolve paddr of the leaf again (btree_search doesn't return it) */
         /* We'll duplicate the search logic here to keep the buf */
         paddr = tree_oid;
-        if (tree_oid != amp->am_nx.nx_omap_oid && (amp->am_sb.apfs_omap_oid == 0 || tree_oid != amp->am_sb.apfs_omap_oid)) {
-            apfs_omap_lookup(amp, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
+        if (tree_oid != omap_oid && omap_oid != 0) {
+            apfs_omap_lookup(amp, omap_oid, tree_oid, amp->am_nx.nx_next_xid - 1, &paddr);
         }
 
         while (1) {
@@ -210,7 +217,7 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t tree_oid, void *start_key, apfs_
             while (low <= high) {
                 mid = (low + high) / 2;
                 void *k_ptr = (uint8_t *)node + node->btn_table_space_off + toc[mid].key_off;
-                if (apfs_key_compare(node->btn_o.o_type, current_k, 0, k_ptr, toc[mid].key_len) < 0)
+                if (apfs_key_compare(node->btn_o.o_type, current_k, current_k_len, k_ptr, toc[mid].key_len) < 0)
                     high = mid - 1;
                 else
                     low = mid + 1;
@@ -226,7 +233,7 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t tree_oid, void *start_key, apfs_
             void *k_ptr = (uint8_t *)node + node->btn_table_space_off + toc[i].key_off;
             void *v_ptr = (uint8_t *)node + node->btn_table_space_off + toc[i].val_off;
             
-            if (apfs_key_compare(node->btn_o.o_type, k_ptr, toc[i].key_len, current_k, 0) < 0)
+            if (apfs_key_compare(node->btn_o.o_type, k_ptr, toc[i].key_len, current_k, current_k_len) < 0)
                 continue;
 
             error = cb(arg, k_ptr, toc[i].key_len, v_ptr, toc[i].val_len);
@@ -237,14 +244,12 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t tree_oid, void *start_key, apfs_
             
             /* Keep track of last key found to advance */
             memcpy(current_k, k_ptr, toc[i].key_len);
+            current_k_len = toc[i].key_len;
         }
 
-        /* 3. Advance to next leaf: search for current_k + epsilon */
-        /* For simple iteration, we just need to know if there's a sibling */
-        /* For now, let's just assume we've found all records if we reach end of leaf */
-        /* and the caller can decide to stop */
+        /* 3. Advance to next leaf */
         brelse(bp, 0);
-        break; /* Simplified: only one leaf for now, readdir will call again if needed */
+        break; /* Simplified */
     }
     error = 0;
 
@@ -252,6 +257,7 @@ out:
     kmem_free(found_k, amp->am_block_size);
     kmem_free(current_k, amp->am_block_size);
     kmem_free(current_v, amp->am_block_size);
+out_noalloc:
     return error;
 }
 
