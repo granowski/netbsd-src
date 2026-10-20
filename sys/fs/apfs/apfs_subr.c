@@ -734,7 +734,8 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             brelse(bp, 0);
             return match_error;
         } else {
-            mid = (low > 0) ? low - 1 : 0;
+            mid = last_match != -1 ? last_match :
+                (low > 0 ? low - 1 : 0);
             error = apfs_btree_entry(amp, node, &info, mid, &k_ptr,
                 &k_len, &v_ptr, &v_len);
             if (error != 0 ||
