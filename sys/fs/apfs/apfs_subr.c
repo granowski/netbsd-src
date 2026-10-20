@@ -277,6 +277,10 @@ apfs_select_checkpoint(struct apfsmount *amp)
 	desc_base = le64toh(base.nx_xp_desc_base);
 	block_count = le64toh(base.nx_block_count);
 	desc_blocks = le32toh(base.nx_xp_desc_blocks);
+	printf("apfs_checkpoint: scanning descriptor ring base %llu "
+	    "blocks %u (next xid 0x%llx)\n",
+	    (unsigned long long)desc_base, desc_blocks,
+	    (unsigned long long)le64toh(base.nx_next_xid));
 	if (desc_blocks == 0 || desc_base > INT64_MAX ||
 	    block_count > INT64_MAX || desc_base >= block_count ||
 	    desc_blocks > block_count - desc_base) {
@@ -303,6 +307,14 @@ apfs_select_checkpoint(struct apfsmount *amp)
 		type = le32toh(candidate.nx_o.o_type) & OBJECT_TYPE_MASK;
 		xid = le64toh(candidate.nx_o.o_xid);
 		if (type != OBJ_CONTAINER_SUPERBLOCK) {
+			if (xid > selected_xid &&
+			    xid < le64toh(base.nx_next_xid)) {
+				printf("apfs_checkpoint: skipping descriptor slot %u "
+				    "(block %llu): object type 0x%x XID 0x%llx, "
+				    "not a container superblock\n",
+				    i, (unsigned long long)(desc_base + i),
+				    type, (unsigned long long)xid);
+			}
 			brelse(bp, 0);
 			continue;
 		}
