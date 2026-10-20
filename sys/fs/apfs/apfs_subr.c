@@ -320,8 +320,10 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
     struct buf *bp;
     omap_phys_t *omap;
     omap_key_t key;
+    omap_key_t found_key;
     omap_val_t val;
     uint64_t calculated_cksum, stored_cksum;
+    uint64_t block_count;
     int error;
 
     if (omap_oid == 0) {
@@ -368,9 +370,10 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
     key.ok_oid = htole64(oid);
     key.ok_xid = htole64(xid);
     error = apfs_btree_search(amp, 0, tree_oid, &key, sizeof(key), &val,
-        sizeof(val), NULL, 0);
+        sizeof(val), &found_key, sizeof(found_key));
     if (error == 0) {
         uint32_t flags = le32toh(val.ov_flags);
+        uint64_t paddr = le64toh((uint64_t)val.ov_paddr);
 
         if (flags & OMAP_VAL_DELETED)
             return ENOENT;
@@ -380,7 +383,18 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
                 (unsigned long long)oid);
             return EOPNOTSUPP;
         }
-        *paddrp = (apfs_paddr_t)le64toh((uint64_t)val.ov_paddr);
+        block_count = le64toh(amp->am_nx.nx_block_count);
+        if (paddr == 0 || paddr >= block_count) {
+            printf("apfs_omap_lookup: invalid mapping for oid 0x%llx "
+                "at requested xid 0x%llx (found xid 0x%llx, flags 0x%x, "
+                "size %u, paddr %llu, block count %llu)\n",
+                (unsigned long long)oid, (unsigned long long)xid,
+                (unsigned long long)le64toh(found_key.ok_xid), flags,
+                le32toh(val.ov_size), (unsigned long long)paddr,
+                (unsigned long long)block_count);
+            return EINVAL;
+        }
+        *paddrp = (apfs_paddr_t)paddr;
     } else {
         printf("apfs_omap_lookup: tree at APFS block %llu has no mapping "
             "for oid 0x%llx at xid 0x%llx (error %d)\n",
