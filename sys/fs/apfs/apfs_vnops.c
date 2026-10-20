@@ -13,9 +13,6 @@
 #include <miscfs/genfs/genfs.h>
 #include <fs/apfs/apfs.h>
 
-#define APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE (1ULL << 1)
-#define APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE (1ULL << 2)
-
 /* Global vnode operation descriptors */
 int (**apfs_vnodeop_p)(void *);
 const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
@@ -103,18 +100,8 @@ apfs_vop_create(void *v)
 {
 	struct vop_create_v3_args *ap = v;
 	struct mount *mp = ap->a_dvp->v_mount;
-	if (mp->mnt_flag & MNT_RDONLY) {
-		/* Check for APFS read-only flags */
-		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
-			/* Container is read-only, all writes fail */
-			return EROFS;
-		}
-		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
-			/* Volume is read-only, all writes fail */
-			return EROFS;
-		}
-		/* Fall through to standard VFS checks */
-	}
+	if (mp->mnt_flag & MNT_RDONLY)
+		return EROFS;
 	
 	return EOPNOTSUPP;
 }
@@ -185,18 +172,8 @@ apfs_vop_setattr(void *v)
 {
 	struct vop_setattr_args *ap = v;
 	struct mount *mp = ap->a_vp->v_mount;
-	if (mp->mnt_flag & MNT_RDONLY) {
-		/* Check for APFS read-only flags */
-		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
-			/* Container is read-only, all writes fail */
-			return EROFS;
-		}
-		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
-			/* Volume is read-only, all writes fail */
-			return EROFS;
-		}
-		/* Fall through to standard VFS checks */
-	}
+	if (mp->mnt_flag & MNT_RDONLY)
+		return EROFS;
 	
 	return EOPNOTSUPP;
 }
@@ -286,18 +263,8 @@ apfs_vop_write(void *v)
 {
 	struct vop_write_args *ap = v;
 	struct mount *mp = ap->a_vp->v_mount;
-	if (mp->mnt_flag & MNT_RDONLY) {
-		/* Check for APFS read-only flags */
-		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
-			/* Container is read-only, all writes fail */
-			return EROFS;
-		}
-		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
-			/* Volume is read-only, all writes fail */
-			return EROFS;
-		}
-		/* Fall through to standard VFS checks */
-	}
+	if (mp->mnt_flag & MNT_RDONLY)
+		return EROFS;
 	
 	return EOPNOTSUPP;
 }
