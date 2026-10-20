@@ -384,6 +384,15 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
             return EOPNOTSUPP;
         }
         block_count = le64toh(amp->am_nx.nx_block_count);
+        if (paddr == tree_oid) {
+            printf("apfs_omap_lookup: oid 0x%llx maps to its OMap tree "
+                "root 0x%llx (found key oid 0x%llx xid 0x%llx, "
+                "flags 0x%x, size %u)\n",
+                (unsigned long long)oid, (unsigned long long)tree_oid,
+                (unsigned long long)le64toh(found_key.ok_oid),
+                (unsigned long long)le64toh(found_key.ok_xid), flags,
+                le32toh(val.ov_size));
+        }
         if (paddr == 0 || paddr >= block_count) {
             printf("apfs_omap_lookup: invalid mapping for oid 0x%llx "
                 "at requested xid 0x%llx (found xid 0x%llx, flags 0x%x, "
