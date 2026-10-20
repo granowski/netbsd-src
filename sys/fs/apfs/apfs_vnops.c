@@ -12,7 +12,8 @@
 
 #include <miscfs/genfs/genfs.h>
 
-#include <fs/apfs/apfs.h>
+#define APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE (1ULL << 1)
+#define APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE (1ULL << 2)
 
 /* Global vnode operation descriptors */
 int (**apfs_vnodeop_p)(void *);
@@ -99,7 +100,7 @@ apfs_vop_lookup(void *v)
 int
 apfs_vop_create(void *v)
 {
-	struct mount *mp = ap->a_dvp->v_mount;
+	struct mount *mp = mp->a_dvp->v_mount;
 	if (mp->mnt_flag & MNT_RDONLY) {
 		/* Check for APFS read-only flags */
 		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
@@ -180,7 +181,7 @@ apfs_vop_getattr(void *v)
 int
 apfs_vop_setattr(void *v)
 {
-	struct mount *mp = ap->a_dvp->v_mount;
+	struct mount *mp = mp->a_dvp->v_mount;
 	if (mp->mnt_flag & MNT_RDONLY) {
 		/* Check for APFS read-only flags */
 		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
@@ -280,7 +281,7 @@ apfs_vop_read(void *v)
 int
 apfs_vop_write(void *v)
 {
-	struct mount *mp = ap->a_dvp->v_mount;
+	struct mount *mp = mp->a_dvp->v_mount;
 	if (mp->mnt_flag & MNT_RDONLY) {
 		/* Check for APFS read-only flags */
 		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
