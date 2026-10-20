@@ -254,9 +254,9 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		goto error_close;
 	}
 
-	brelse(bp, 0);
-	bp = NULL;
 	if (block_size != 4096) {
+		brelse(bp, 0);
+		bp = NULL;
 		error = bread(devvp, 0, block_size, 0, &bp);
 		if (error != 0) {
 			printf("apfs_mount: cannot read full container superblock: "
