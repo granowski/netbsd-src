@@ -324,6 +324,7 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
     omap_val_t val;
     uint64_t calculated_cksum, stored_cksum;
     uint64_t block_count;
+    uint32_t tree_type;
     int error;
 
     if (omap_oid == 0) {
@@ -360,6 +361,7 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
     }
 
     oid_t tree_oid = le64toh(omap->omap_tree_oid);
+    tree_type = le32toh(omap->omap_tree_type);
     brelse(bp, 0);
     if (tree_oid == 0) {
         printf("apfs_omap_lookup: OMap object at APFS block %llu has no "
@@ -369,12 +371,22 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
 
     key.ok_oid = htole64(oid);
     key.ok_xid = htole64(xid);
+    printf("apfs_omap_lookup: search oid 0x%llx xid 0x%llx in tree "
+        "0x%llx (tree type 0x%x)\n", (unsigned long long)oid,
+        (unsigned long long)xid, (unsigned long long)tree_oid,
+        tree_type);
     error = apfs_btree_search(amp, 0, tree_oid, &key, sizeof(key), &val,
         sizeof(val), &found_key, sizeof(found_key));
     if (error == 0) {
         uint32_t flags = le32toh(val.ov_flags);
         uint64_t paddr = le64toh((uint64_t)val.ov_paddr);
 
+        printf("apfs_omap_lookup: result requested (0x%llx,0x%llx), "
+            "found (0x%llx,0x%llx) flags 0x%x size %u paddr %llu\n",
+            (unsigned long long)oid, (unsigned long long)xid,
+            (unsigned long long)le64toh(found_key.ok_oid),
+            (unsigned long long)le64toh(found_key.ok_xid), flags,
+            le32toh(val.ov_size), (unsigned long long)paddr);
         if (flags & OMAP_VAL_DELETED)
             return ENOENT;
         if (flags & OMAP_VAL_ENCRYPTED) {
@@ -706,6 +718,24 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 brelse(bp, 0);
                 return error;
             }
+            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_OMAP &&
+                k_len >= sizeof(omap_key_t) && v_len >= sizeof(omap_val_t)) {
+                const omap_key_t *omap_key = k_ptr;
+                const omap_val_t *omap_val = v_ptr;
+
+                printf("apfs_btree_search: OMap leaf block %lld oid "
+                    "0x%llx level %u selected key (0x%llx,0x%llx) "
+                    "value flags 0x%x size %u paddr %llu\n",
+                    (long long)paddr,
+                    (unsigned long long)le64toh(node->btn_o.o_oid),
+                    le16toh(node->btn_level),
+                    (unsigned long long)le64toh(omap_key->ok_oid),
+                    (unsigned long long)le64toh(omap_key->ok_xid),
+                    le32toh(omap_val->ov_flags),
+                    le32toh(omap_val->ov_size),
+                    (unsigned long long)le64toh(
+                    (uint64_t)omap_val->ov_paddr));
+            }
             if (v_len < val_size) {
                 brelse(bp, 0);
                 return EINVAL;
@@ -754,6 +784,20 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 return error != 0 ? error : EINVAL;
             }
             oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
+            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_OMAP &&
+                k_len >= sizeof(omap_key_t)) {
+                const omap_key_t *omap_key = k_ptr;
+
+                printf("apfs_btree_search: OMap internal block %lld oid "
+                    "0x%llx level %u chose entry %d key (0x%llx,0x%llx) "
+                    "child 0x%llx\n",
+                    (long long)paddr,
+                    (unsigned long long)le64toh(node->btn_o.o_oid),
+                    le16toh(node->btn_level), mid,
+                    (unsigned long long)le64toh(omap_key->ok_oid),
+                    (unsigned long long)le64toh(omap_key->ok_xid),
+                    (unsigned long long)child_oid);
+            }
             if ((tree_flags & BTREE_HASHED) != 0) {
                 const btree_index_node_val_t *index_val = v_ptr;
                 memcpy(expected_hash, index_val->child_hash,
