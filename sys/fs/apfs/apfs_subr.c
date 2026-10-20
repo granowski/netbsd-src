@@ -130,11 +130,24 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 	    desc_len == 0 ||
 	    desc_len > desc_blocks || desc_base >= block_count ||
 	    desc_base > INT64_MAX || block_count > INT64_MAX ||
-	    desc_blocks > block_count - desc_base)
+	    desc_blocks > block_count - desc_base) {
+		printf("apfs_checkpoint: XID 0x%llx invalid descriptor ring "
+		    "(base %llu blocks %u index %u length %u slot %u, "
+		    "container blocks %llu)\n",
+		    (unsigned long long)xid, (unsigned long long)desc_base,
+		    desc_blocks, desc_index, desc_len, desc_slot,
+		    (unsigned long long)block_count);
 		return false;
+	}
 	if (((uint64_t)desc_index + desc_len - 1) % desc_blocks !=
-	    desc_slot)
+	    desc_slot) {
+		printf("apfs_checkpoint: XID 0x%llx descriptor slot mismatch "
+		    "(index %u length %u slot %u, expected %llu)\n",
+		    (unsigned long long)xid, desc_index, desc_len, desc_slot,
+		    (unsigned long long)(((uint64_t)desc_index + desc_len - 1) %
+		    desc_blocks));
 		return false;
+	}
 
 	capacity = (amp->am_block_size - sizeof(*map)) /
 	    sizeof(checkpoint_mapping_t);
@@ -144,17 +157,41 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 		uint32_t flags;
 		int error = apfs_bread(amp, paddr, &bp);
 
-		if (error != 0)
+		if (error != 0) {
+			printf("apfs_checkpoint: XID 0x%llx cannot read "
+			    "descriptor block %llu: error %d\n",
+			    (unsigned long long)xid, (unsigned long long)paddr,
+			    error);
 			return false;
+		}
 		map = (checkpoint_map_phys_t *)bp->b_data;
 		if ((le32toh(map->cpm_o.o_type) & OBJECT_TYPE_MASK) !=
 		    OBJ_CHECKPOINT_MAP ||
 		    le64toh(map->cpm_o.o_xid) != xid) {
+			if ((le32toh(map->cpm_o.o_type) & OBJECT_TYPE_MASK) ==
+			    OBJ_CHECKPOINT_MAP) {
+				printf("apfs_checkpoint: descriptor block %llu has "
+				    "checkpoint-map XID 0x%llx, expected 0x%llx\n",
+				    (unsigned long long)paddr,
+				    (unsigned long long)le64toh(map->cpm_o.o_xid),
+				    (unsigned long long)xid);
+			}
 			brelse(bp, 0);
 			continue;
 		}
-		if (le64toh(map->cpm_o.o_oid) != (uint64_t)paddr ||
-		    !apfs_checksum_valid(amp, map)) {
+		if (le64toh(map->cpm_o.o_oid) != (uint64_t)paddr) {
+			printf("apfs_checkpoint: XID 0x%llx checkpoint-map at "
+			    "%llu has OID 0x%llx, expected 0x%llx\n",
+			    (unsigned long long)xid, (unsigned long long)paddr,
+			    (unsigned long long)le64toh(map->cpm_o.o_oid),
+			    (unsigned long long)paddr);
+			brelse(bp, 0);
+			return false;
+		}
+		if (!apfs_checksum_valid(amp, map)) {
+			printf("apfs_checkpoint: XID 0x%llx checkpoint-map at "
+			    "%llu has invalid checksum\n",
+			    (unsigned long long)xid, (unsigned long long)paddr);
 			brelse(bp, 0);
 			return false;
 		}
@@ -162,9 +199,17 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 		count = le32toh(map->cpm_count);
 		flags = le32toh(map->cpm_flags);
 		if (count > capacity) {
+			printf("apfs_checkpoint: XID 0x%llx checkpoint-map at "
+			    "%llu has invalid entry count %u (capacity %u)\n",
+			    (unsigned long long)xid, (unsigned long long)paddr,
+			    count, capacity);
 			brelse(bp, 0);
 			return false;
 		}
+		printf("apfs_checkpoint: XID 0x%llx checkpoint-map at %llu "
+		    "has %u entries, flags 0x%x\n",
+		    (unsigned long long)xid, (unsigned long long)paddr, count,
+		    flags);
 		for (uint32_t j = 0; j < count; j++) {
 			checkpoint_mapping_t *entry = &map->cpm_map[j];
 			uint32_t size = le32toh(entry->cpm_size);
@@ -177,11 +222,29 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 
 			if (oid == 0 || size == 0 || storage != OBJ_EPHEMERAL ||
 			    mapping_paddr >= block_count) {
+				printf("apfs_checkpoint: XID 0x%llx map block %llu "
+				    "entry %u invalid (type 0x%x oid 0x%llx "
+				    "size %u paddr %llu, container blocks %llu)\n",
+				    (unsigned long long)xid,
+				    (unsigned long long)paddr, j,
+				    le32toh(entry->cpm_type),
+				    (unsigned long long)oid, size,
+				    (unsigned long long)mapping_paddr,
+				    (unsigned long long)block_count);
 				brelse(bp, 0);
 				return false;
 			}
 			blocks = howmany(size, amp->am_block_size);
 			if (blocks > block_count - mapping_paddr) {
+				printf("apfs_checkpoint: XID 0x%llx map block %llu "
+				    "entry %u extends past container "
+				    "(size %u paddr %llu blocks %llu, "
+				    "container blocks %llu)\n",
+				    (unsigned long long)xid,
+				    (unsigned long long)paddr, j, size,
+				    (unsigned long long)mapping_paddr,
+				    (unsigned long long)blocks,
+				    (unsigned long long)block_count);
 				brelse(bp, 0);
 				return false;
 			}
@@ -191,7 +254,13 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 		brelse(bp, 0);
 	}
 
-	return found_map && found_last;
+	if (!found_map || !found_last) {
+		printf("apfs_checkpoint: XID 0x%llx missing checkpoint map "
+		    "(found map %u, found last %u)\n",
+		    (unsigned long long)xid, found_map, found_last);
+		return false;
+	}
+	return true;
 }
 
 int
@@ -210,40 +279,117 @@ apfs_select_checkpoint(struct apfsmount *amp)
 	desc_blocks = le32toh(base.nx_xp_desc_blocks);
 	if (desc_blocks == 0 || desc_base > INT64_MAX ||
 	    block_count > INT64_MAX || desc_base >= block_count ||
-	    desc_blocks > block_count - desc_base)
+	    desc_blocks > block_count - desc_base) {
+		printf("apfs_checkpoint: invalid descriptor ring in block-zero "
+		    "superblock (base %llu blocks %u, container blocks %llu)\n",
+		    (unsigned long long)desc_base, desc_blocks,
+		    (unsigned long long)block_count);
 		return EINVAL;
+	}
 
 	for (uint32_t i = 0; i < desc_blocks; i++) {
 		uint64_t xid;
 		uint32_t type;
+		bool checksum_valid;
 
 		error = apfs_bread(amp, (apfs_paddr_t)(desc_base + i), &bp);
-		if (error != 0)
+		if (error != 0) {
+			printf("apfs_checkpoint: cannot read descriptor slot %u "
+			    "(block %llu): error %d\n", i,
+			    (unsigned long long)(desc_base + i), error);
 			continue;
+		}
 		memcpy(&candidate, bp->b_data, sizeof(candidate));
 		type = le32toh(candidate.nx_o.o_type) & OBJECT_TYPE_MASK;
 		xid = le64toh(candidate.nx_o.o_xid);
-		if (type != OBJ_CONTAINER_SUPERBLOCK || xid <= selected_xid ||
-		    le32toh(candidate.nx_magic) != NX_MAGIC ||
-		    le32toh(candidate.nx_block_size) != amp->am_block_size ||
-		    !apfs_checksum_valid(amp, bp->b_data)) {
+		if (type != OBJ_CONTAINER_SUPERBLOCK) {
+			brelse(bp, 0);
+			continue;
+		}
+		if (xid <= selected_xid) {
+			brelse(bp, 0);
+			continue;
+		}
+		if (le32toh(candidate.nx_magic) != NX_MAGIC) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: magic 0x%x, expected 0x%x\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid,
+			    le32toh(candidate.nx_magic), NX_MAGIC);
+			brelse(bp, 0);
+			continue;
+		}
+		if (le32toh(candidate.nx_block_size) != amp->am_block_size) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: block size %u, expected %u\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid,
+			    le32toh(candidate.nx_block_size), amp->am_block_size);
+			brelse(bp, 0);
+			continue;
+		}
+		checksum_valid = apfs_checksum_valid(amp, bp->b_data);
+		if (!checksum_valid) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: invalid checksum\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid);
 			brelse(bp, 0);
 			continue;
 		}
 		brelse(bp, 0);
 
 		if (le32toh(candidate.nx_max_file_systems) >
-		    NX_MAX_FILE_SYSTEMS ||
-		    le64toh(candidate.nx_block_count) != block_count ||
-		    le64toh(candidate.nx_xp_desc_base) != desc_base ||
-		    le32toh(candidate.nx_xp_desc_blocks) != desc_blocks ||
-		    !apfs_checkpoint_maps_valid(amp, &candidate, desc_blocks, i,
-		    xid))
+		    NX_MAX_FILE_SYSTEMS) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: filesystem limit %u exceeds %u\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid,
+			    le32toh(candidate.nx_max_file_systems),
+			    NX_MAX_FILE_SYSTEMS);
 			continue;
+		}
+		if (le64toh(candidate.nx_block_count) != block_count) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: block count %llu, expected %llu\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid,
+			    (unsigned long long)le64toh(candidate.nx_block_count),
+			    (unsigned long long)block_count);
+			continue;
+		}
+		if (le64toh(candidate.nx_xp_desc_base) != desc_base) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: descriptor base %llu, expected %llu\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid,
+			    (unsigned long long)le64toh(candidate.nx_xp_desc_base),
+			    (unsigned long long)desc_base);
+			continue;
+		}
+		if (le32toh(candidate.nx_xp_desc_blocks) != desc_blocks) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: descriptor blocks %u, expected %u\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid,
+			    le32toh(candidate.nx_xp_desc_blocks), desc_blocks);
+			continue;
+		}
+		if (!apfs_checkpoint_maps_valid(amp, &candidate, desc_blocks, i,
+		    xid)) {
+			printf("apfs_checkpoint: rejecting candidate at block "
+			    "%llu XID 0x%llx: checkpoint maps invalid\n",
+			    (unsigned long long)(desc_base + i),
+			    (unsigned long long)xid);
+			continue;
+		}
 
 		selected = candidate;
 		selected_xid = xid;
 		found = true;
+		printf("apfs_checkpoint: accepted candidate at block %llu "
+		    "XID 0x%llx\n", (unsigned long long)(desc_base + i),
+		    (unsigned long long)xid);
 	}
 
 	if (!found)
