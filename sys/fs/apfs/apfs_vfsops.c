@@ -6,7 +6,8 @@
 #include <sys/proc.h>
 #include <sys/kernel.h>
 #include <sys/vnode.h>
-#include <sys/mount.h>
+#define APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE (1 << 10)
+#define APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE (1 << 11)
 #include <sys/buf.h>
 #include <sys/device.h>
 #include <sys/conf.h>
@@ -180,8 +181,18 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		return EINVAL;
 	}
 
-	if (mp->mnt_flag & MNT_UPDATE)
-		return EOPNOTSUPP;
+	if (mp->mnt_flag & MNT_RDONLY) {
+		/* Check for APFS read-only flags */
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
+			/* Container is read-only, all writes fail */
+			return EROFS;
+		}
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
+			/* Volume is read-only, all writes fail */
+			return EROFS;
+		}
+		/* Fall through to standard VFS checks */
+	}
 
 	/* 1. Get the device vnode */
 	error = namei_simple_user(args->fspec, NSM_FOLLOW_NOEMULROOT, &devvp);

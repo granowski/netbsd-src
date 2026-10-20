@@ -99,22 +99,19 @@ apfs_vop_lookup(void *v)
 int
 apfs_vop_create(void *v)
 {
-	struct vop_create_v3_args *ap = v;
-	struct vnode *dvp = ap->a_dvp;
-	struct componentname *cnp = ap->a_cnp;
-	struct vattr *vap = ap->a_vap;
-	
-	(void)dvp;
-	(void)cnp;
-	(void)vap;
-
-	/* TODO: 
-	 * 1. Allocate new OID.
-	 * 2. Create inode record.
-	 * 3. Insert into Root Tree (COW).
-	 * 4. Add DREC to parent directory (COW).
-	 * 5. Update parent directory mod time.
-	 */
+	struct mount *mp = ap->a_dvp->v_mount;
+	if (mp->mnt_flag & MNT_RDONLY) {
+		/* Check for APFS read-only flags */
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
+			/* Container is read-only, all writes fail */
+			return EROFS;
+		}
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
+			/* Volume is read-only, all writes fail */
+			return EROFS;
+		}
+		/* Fall through to standard VFS checks */
+	}
 	
 	return EOPNOTSUPP;
 }
@@ -183,15 +180,19 @@ apfs_vop_getattr(void *v)
 int
 apfs_vop_setattr(void *v)
 {
-	struct vop_setattr_args *ap = v;
-	struct vnode *vp = ap->a_vp;
-	struct vattr *vap = ap->a_vap;
-	struct apfsnode *apnode = VTOA(vp);
-	
-	(void)vap;
-	(void)apnode;
-
-	/* TODO: Update inode record and COW Root Tree */
+	struct mount *mp = ap->a_dvp->v_mount;
+	if (mp->mnt_flag & MNT_RDONLY) {
+		/* Check for APFS read-only flags */
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
+			/* Container is read-only, all writes fail */
+			return EROFS;
+		}
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
+			/* Volume is read-only, all writes fail */
+			return EROFS;
+		}
+		/* Fall through to standard VFS checks */
+	}
 	
 	return EOPNOTSUPP;
 }
@@ -279,20 +280,19 @@ apfs_vop_read(void *v)
 int
 apfs_vop_write(void *v)
 {
-	struct vop_write_args *ap = v;
-	struct vnode *vp = ap->a_vp;
-	struct uio *uio = ap->a_uio;
-	struct apfsnode *apnode = VTOA(vp);
-	
-	(void)uio;
-	(void)apnode;
-
-	/* TODO:
-	 * 1. Allocate blocks for data (apfs_alloc_block).
-	 * 2. Create EXTENT records.
-	 * 3. Update inode size.
-	 * 4. COW the Root Tree.
-	 */
+	struct mount *mp = ap->a_dvp->v_mount;
+	if (mp->mnt_flag & MNT_RDONLY) {
+		/* Check for APFS read-only flags */
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_CONTAINER_COMPATIBLE) {
+			/* Container is read-only, all writes fail */
+			return EROFS;
+		}
+		if (mp->mnt_flag & APFS_FLAG_READ_ONLY_VOLUME_COMPATIBLE) {
+			/* Volume is read-only, all writes fail */
+			return EROFS;
+		}
+		/* Fall through to standard VFS checks */
+	}
 	
 	return EOPNOTSUPP;
 }

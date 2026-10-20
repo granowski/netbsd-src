@@ -119,7 +119,6 @@ _SRC_TOP_OBJ_=
 # Sanity check: make sure that "make build" is not invoked simultaneously
 # with a standard recursive target.
 #
-
 .if make(build) || make(release) || make(snapshot)
 .for targ in ${TARGETS:Nobj:Ncleandir}
 .if make(${targ}) && !target(.BEGIN)
