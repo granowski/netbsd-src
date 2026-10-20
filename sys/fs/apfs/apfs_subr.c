@@ -307,8 +307,7 @@ apfs_select_checkpoint(struct apfsmount *amp)
 		type = le32toh(candidate.nx_o.o_type) & OBJECT_TYPE_MASK;
 		xid = le64toh(candidate.nx_o.o_xid);
 		if (type != OBJ_CONTAINER_SUPERBLOCK) {
-			if (xid > selected_xid &&
-			    xid < le64toh(base.nx_next_xid)) {
+			if (xid > selected_xid) {
 				printf("apfs_checkpoint: skipping descriptor slot %u "
 				    "(block %llu): object type 0x%x XID 0x%llx, "
 				    "not a container superblock\n",
