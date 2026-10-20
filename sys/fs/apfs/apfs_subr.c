@@ -477,7 +477,7 @@ apfs_btree_entry(struct apfsmount *amp, btree_node_phys_t *node,
 	uint32_t table_len = le16toh(node->btn_table_space_len);
 	uint32_t data_end = amp->am_block_size;
 	uint32_t toc_size, key_off, key_len, val_off, val_len;
-	uint32_t key_area;
+	uint32_t key_area, val_start;
 
 	if ((flags & BTNODE_ROOT) != 0)
 		data_end -= sizeof(*info);
@@ -516,13 +516,15 @@ apfs_btree_entry(struct apfsmount *amp, btree_node_phys_t *node,
 	key_area = sizeof(*node) + table_off + table_len;
 	if (key_area > data_end || key_off > data_end - key_area ||
 	    key_len > data_end - key_area - key_off ||
-	    val_off > data_end || val_len > data_end - val_off ||
-	    data_end - val_off - val_len < key_area)
+	    val_off > data_end || val_len > val_off)
+		return EINVAL;
+	val_start = data_end - val_off;
+	if (val_start < key_area + key_off + key_len)
 		return EINVAL;
 
 	*keyp = (uint8_t *)node + key_area + key_off;
 	*key_lenp = key_len;
-	*valp = (uint8_t *)node + data_end - val_off - val_len;
+	*valp = (uint8_t *)node + val_start;
 	*val_lenp = val_len;
 	return 0;
 }
