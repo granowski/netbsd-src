@@ -260,6 +260,7 @@ apfs_vop_getattr(void *v)
 	vap->va_fileid = apnode->a_oid;
 	vap->va_size = apnode->a_ino.uncompressed_size;
 	vap->va_blocksize = apnode->a_amp->am_block_size;
+	vap->va_bytes = vap->va_size;
 	
 	/* APFS timestamps are in nanoseconds since 1970-01-01 */
 	vap->va_atime.tv_sec = apnode->a_ino.access_time / 1000000000;
@@ -459,6 +460,11 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 		    le32toh(key->name_len_and_hash));
 		return EINVAL;
 	}
+	if (key->name[name_len - 1] != '\0') {
+		printf("apfs_readdir_cb: name is not NUL-terminated length %u\n",
+		    name_len);
+		return EINVAL;
+	}
 	printf("apfs_readdir_cb: record parent 0x%llx type 0x%llx "
 	    "name length %u file id 0x%llx flags 0x%x\n",
 	    (unsigned long long)(le64toh(key->obj_id_and_type) & OBJ_ID_MASK),
@@ -468,10 +474,10 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	    le16toh(val->flags));
 	memset(&de, 0, sizeof(de));
 	de.d_fileno = le64toh(val->file_id);
-	de.d_namlen = name_len;
+	de.d_namlen = name_len - 1;
 	de.d_type = DT_UNKNOWN; /* Could be derived from val->flags */
 	
-	size_t name_to_copy = MIN(de.d_namlen, sizeof(de.d_name) - 1);
+	size_t name_to_copy = de.d_namlen;
 	memcpy(de.d_name, key->name, name_to_copy);
 	de.d_name[name_to_copy] = '\0';
 	de.d_reclen = _DIRENT_SIZE(&de);
