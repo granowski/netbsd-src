@@ -38,6 +38,7 @@ const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
 	{ &vop_lock_desc, genfs_lock },
 	{ &vop_unlock_desc, genfs_unlock },
 	{ &vop_islocked_desc, genfs_islocked },
+	{ &vop_pathconf_desc, genfs_pathconf },
 	{ &vop_strategy_desc, apfs_vop_strategy },
 	{ &vop_bmap_desc, apfs_vop_bmap },
 	{ &vop_getpages_desc, genfs_getpages },
