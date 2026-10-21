@@ -486,8 +486,15 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	spaceman_device_t *dev;
 	uint64_t block_count, chunk_count, expected_cib_count;
 	uint64_t total_free = 0;
+	uint64_t first_clear_free = 0, first_set_free = 0;
+	uint64_t first_clear_bitmap = 0, first_set_bitmap = 0;
+	uint64_t first_clear_chunk = 0, first_set_chunk = 0;
+	uint32_t first_clear_bit = 0, first_set_bit = 0;
 	uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
 	uint32_t struct_size;
+	int free_bit_value = -1;
+	bool have_clear_candidate = false, have_set_candidate = false;
+	bool have_bitmap = false, have_unmapped_chunk = false;
 	apfs_paddr_t spaceman_paddr;
 	int error;
 
@@ -660,16 +667,19 @@ apfs_validate_spaceman(struct apfsmount *amp)
 			uint64_t blocks_remaining = block_count - chunk_start;
 			uint32_t expected_blocks = (uint32_t)MIN(
 			    blocks_remaining, blocks_per_chunk);
+			uint32_t ci_block_count, ci_free_count;
 			uint64_t bitmap_paddr;
 			uint32_t free_blocks = 0;
 			struct buf *bitmap_bp;
 
 			memcpy(&ci, &cib->cib_chunk_info[j], sizeof(ci));
+			ci_block_count = le32toh(ci.ci_block_count);
+			ci_free_count = le32toh(ci.ci_free_count);
 			bitmap_paddr = le64toh((uint64_t)ci.ci_bitmap_addr);
 			if (le64toh(ci.ci_xid) > amp->am_checkpoint_xid ||
 			    le64toh(ci.ci_addr) != chunk_start ||
-			    le32toh(ci.ci_block_count) != expected_blocks ||
-			    le32toh(ci.ci_free_count) > expected_blocks) {
+			    ci_block_count != expected_blocks ||
+			    ci_free_count > expected_blocks) {
 				printf("apfs_spaceman: invalid chunk %llu "
 				    "(xid 0x%llx address %llu/%llu blocks %u/%u "
 				    "free %u)\n",
@@ -677,24 +687,23 @@ apfs_validate_spaceman(struct apfsmount *amp)
 				    (unsigned long long)le64toh(ci.ci_xid),
 				    (unsigned long long)le64toh(ci.ci_addr),
 				    (unsigned long long)chunk_start,
-				    le32toh(ci.ci_block_count), expected_blocks,
-				    le32toh(ci.ci_free_count));
+				    ci_block_count, expected_blocks, ci_free_count);
 				brelse(cibp, 0);
 				brelse(smbp, 0);
 				return EINVAL;
 			}
 			if (bitmap_paddr == 0) {
-				if (le32toh(ci.ci_free_count) != expected_blocks) {
+				if (ci_free_count != expected_blocks) {
 					printf("apfs_spaceman: chunk %llu has no "
 					    "bitmap but reports %u/%u free blocks\n",
 					    (unsigned long long)chunk_index,
-					    le32toh(ci.ci_free_count),
-					    expected_blocks);
+					    ci_free_count, expected_blocks);
 					brelse(cibp, 0);
 					brelse(smbp, 0);
 					return EINVAL;
 				}
 				free_blocks = expected_blocks;
+				have_unmapped_chunk = true;
 			} else {
 				if (!apfs_spaceman_paddr_valid(amp,
 				    bitmap_paddr) ||
@@ -721,22 +730,75 @@ apfs_validate_spaceman(struct apfsmount *amp)
 				}
 				const uint8_t *bitmap =
 				    (const uint8_t *)bitmap_bp->b_data;
+				uint32_t clear_blocks = 0, set_blocks = 0;
+				uint32_t first_clear = expected_blocks;
+				uint32_t first_set = expected_blocks;
+
+				have_bitmap = true;
 				for (uint32_t bit = 0; bit < expected_blocks; bit++) {
+					/* APFS numbers bitmap bits from the LSB. */
 					if ((bitmap[bit >> 3] &
-					    (1U << (bit & 7))) == 0)
-						free_blocks++;
+					    (1U << (bit & 7))) == 0) {
+						if (first_clear == expected_blocks)
+							first_clear = bit;
+						clear_blocks++;
+					} else {
+						if (first_set == expected_blocks)
+							first_set = bit;
+						set_blocks++;
+					}
 				}
 				brelse(bitmap_bp, 0);
-				if (free_blocks != le32toh(ci.ci_free_count)) {
+				if (first_clear < expected_blocks &&
+				    !have_clear_candidate) {
+					first_clear_free = chunk_start + first_clear;
+					first_clear_bitmap = bitmap_paddr;
+					first_clear_chunk = chunk_index;
+					first_clear_bit = first_clear;
+					have_clear_candidate = true;
+				}
+				if (first_set < expected_blocks &&
+				    !have_set_candidate) {
+					first_set_free = chunk_start + first_set;
+					first_set_bitmap = bitmap_paddr;
+					first_set_chunk = chunk_index;
+					first_set_bit = first_set;
+					have_set_candidate = true;
+				}
+				if (clear_blocks == ci_free_count &&
+				    set_blocks != ci_free_count) {
+					if (free_bit_value == 1) {
+						printf("apfs_spaceman: bitmap polarity "
+						    "conflicts at chunk %llu\n",
+						    (unsigned long long)chunk_index);
+						brelse(cibp, 0);
+						brelse(smbp, 0);
+						return EINVAL;
+					}
+					free_bit_value = 0;
+				} else if (set_blocks == ci_free_count &&
+				    clear_blocks != ci_free_count) {
+					if (free_bit_value == 0) {
+						printf("apfs_spaceman: bitmap polarity "
+						    "conflicts at chunk %llu\n",
+						    (unsigned long long)chunk_index);
+						brelse(cibp, 0);
+						brelse(smbp, 0);
+						return EINVAL;
+					}
+					free_bit_value = 1;
+				} else if (clear_blocks != ci_free_count ||
+				    set_blocks != ci_free_count) {
 					printf("apfs_spaceman: chunk %llu bitmap "
-					    "free count %u disagrees with CIB %u\n",
+					    "counts clear=%u set=%u disagree with "
+					    "CIB free count %u\n",
 					    (unsigned long long)chunk_index,
-					    free_blocks,
-					    le32toh(ci.ci_free_count));
+					    clear_blocks, set_blocks, ci_free_count);
 					brelse(cibp, 0);
 					brelse(smbp, 0);
 					return EINVAL;
 				}
+				free_blocks = ci_free_count;
 			}
 			total_free += free_blocks;
 		}
@@ -755,6 +817,29 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	printf("apfs_spaceman: validated %llu free blocks across %llu chunks\n",
 	    (unsigned long long)total_free,
 	    (unsigned long long)chunk_count);
+	if (free_bit_value == 0 && have_clear_candidate) {
+		printf("apfs_spaceman: bitmap semantics: clear bits are free; "
+		    "read-only candidate %llu (chunk %llu, bitmap %llu, "
+		    "bit %u; not reserved)\n",
+		    (unsigned long long)first_clear_free,
+		    (unsigned long long)first_clear_chunk,
+		    (unsigned long long)first_clear_bitmap, first_clear_bit);
+	} else if (free_bit_value == 1 && have_set_candidate) {
+		printf("apfs_spaceman: bitmap semantics: set bits are free; "
+		    "read-only candidate %llu (chunk %llu, bitmap %llu, "
+		    "bit %u; not reserved)\n",
+		    (unsigned long long)first_set_free,
+		    (unsigned long long)first_set_chunk,
+		    (unsigned long long)first_set_bitmap, first_set_bit);
+	} else if (total_free == 0) {
+		printf("apfs_spaceman: no free-block candidate found\n");
+	} else if (have_bitmap) {
+		printf("apfs_spaceman: free counts validate, but bitmap polarity "
+		    "is ambiguous; no candidate reported\n");
+	} else if (have_unmapped_chunk) {
+		printf("apfs_spaceman: free chunks lack allocation bitmaps; "
+		    "no safe candidate reported\n");
+	}
 	brelse(smbp, 0);
 	return 0;
 }
