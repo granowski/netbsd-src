@@ -136,10 +136,12 @@ apfs_vop_lookup(void *v)
 			return 0;
 		}
 		if (cnp->cn_namelen == 2 && cnp->cn_nameptr[1] == '.') {
-			error = apfs_vget(dvp->v_mount, dnode->a_ino.parent_id,
-			    LK_EXCLUSIVE, ap->a_vpp);
+			ino_t parent_ino = dnode->a_ino.parent_id;
+
+			error = vcache_get(dvp->v_mount, &parent_ino,
+			    sizeof(parent_ino), ap->a_vpp);
 			printf("apfs_lookup: dotdot parent inode 0x%llx "
-			    "vget error %d vnode %p\n",
+			    "vcache_get error %d vnode %p\n",
 			    (unsigned long long)dnode->a_ino.parent_id, error,
 			    error == 0 ? *ap->a_vpp : NULL);
 			return error;
@@ -182,11 +184,12 @@ apfs_vop_lookup(void *v)
 		    "0x%llx\n", (unsigned long long)dnode->a_oid,
 		    (int)cnp->cn_namelen, cnp->cn_nameptr,
 		    (unsigned long long)le64toh(val.file_id));
-		error = apfs_vget(dvp->v_mount, le64toh(val.file_id),
-		    LK_EXCLUSIVE, ap->a_vpp);
-		printf("apfs_lookup: vget inode 0x%llx returned error %d "
-		    "vnode %p\n", (unsigned long long)le64toh(val.file_id),
-		    error, error == 0 ? *ap->a_vpp : NULL);
+		ino_t ino = le64toh(val.file_id);
+
+		error = vcache_get(dvp->v_mount, &ino, sizeof(ino), ap->a_vpp);
+		printf("apfs_lookup: vcache_get inode 0x%llx returned error "
+		    "%d vnode %p\n", (unsigned long long)ino, error,
+		    error == 0 ? *ap->a_vpp : NULL);
 		return error;
 	}
 	printf("apfs_lookup: dir 0x%llx name '%.*s' failed: error %d\n",
