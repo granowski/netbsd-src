@@ -52,6 +52,65 @@ const struct vnodeopv_desc * const apfs_vnodeopv_descs[] = {
 	NULL,
 };
 
+static int
+apfs_name_hash(const char *name, size_t len, bool case_insensitive,
+    bool normalization_insensitive, uint32_t *hashp)
+{
+	const uint8_t *p = (const uint8_t *)name;
+	uint32_t crc = 0xffffffff;
+
+	while (len != 0) {
+		uint32_t cp;
+		size_t nbytes;
+
+		if (p[0] < 0x80) {
+			cp = p[0];
+			nbytes = 1;
+		} else if ((p[0] & 0xe0) == 0xc0) {
+			cp = p[0] & 0x1f;
+			nbytes = 2;
+		} else if ((p[0] & 0xf0) == 0xe0) {
+			cp = p[0] & 0x0f;
+			nbytes = 3;
+		} else if ((p[0] & 0xf8) == 0xf0) {
+			cp = p[0] & 0x07;
+			nbytes = 4;
+		} else {
+			return EILSEQ;
+		}
+		if (nbytes > len)
+			return EILSEQ;
+		for (size_t i = 1; i < nbytes; i++) {
+			if ((p[i] & 0xc0) != 0x80)
+				return EILSEQ;
+			cp = (cp << 6) | (p[i] & 0x3f);
+		}
+		if ((nbytes == 2 && cp < 0x80) ||
+		    (nbytes == 3 && cp < 0x800) ||
+		    (nbytes == 4 && cp < 0x10000) ||
+		    cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))
+			return EILSEQ;
+		/* Unicode folding and NFD require tables not available here. */
+		if (cp > 0x7f &&
+		    (case_insensitive || normalization_insensitive))
+			return EOPNOTSUPP;
+		if (case_insensitive && cp >= 'A' && cp <= 'Z')
+			cp += 'a' - 'A';
+
+		for (size_t i = 0; i < sizeof(cp); i++) {
+			crc ^= (cp >> (i * 8)) & 0xff;
+			for (unsigned int bit = 0; bit < 8; bit++)
+				crc = (crc >> 1) ^
+				    (0x82f63b78U & -(crc & 1));
+		}
+		p += nbytes;
+		len -= nbytes;
+	}
+
+	*hashp = crc & 0x003fffff;
+	return 0;
+}
+
 int
 apfs_vop_lookup(void *v)
 {
@@ -61,6 +120,8 @@ apfs_vop_lookup(void *v)
 	struct apfsnode *dnode = VTOA(dvp);
 	j_drec_key_t *key;
 	j_drec_val_t val;
+	uint64_t incompat_features;
+	uint32_t name_hash;
 	int error;
 
 	printf("apfs_lookup: dir 0x%llx name '%.*s' len %zu\n",
@@ -85,11 +146,27 @@ apfs_vop_lookup(void *v)
 		}
 	}
 
+	if (cnp->cn_namelen >= DREC_NLEN_MASK)
+		return ENAMETOOLONG;
+	incompat_features =
+	    le64toh(dnode->a_amp->am_sb.apfs_incompatible_features);
+	error = apfs_name_hash(cnp->cn_nameptr, cnp->cn_namelen,
+	    (incompat_features & APFS_INCOMPAT_CASE_INSENSITIVE) != 0,
+	    (incompat_features & APFS_INCOMPAT_NORMALIZATION_INSENSITIVE) != 0,
+	    &name_hash);
+	if (error != 0) {
+		printf("apfs_lookup: cannot hash name '%.*s': error %d\n",
+		    (int)cnp->cn_namelen, cnp->cn_nameptr, error);
+		return error;
+	}
+	printf("apfs_lookup: DREC hash 0x%x incompat features 0x%llx\n",
+	    name_hash, (unsigned long long)incompat_features);
+
 	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen + 1, KM_SLEEP);
 	key->obj_id_and_type = htole64(APFS_KEY(dnode->a_oid,
 	    APFS_TYPE_DIR_REC));
-	key->name_len_and_hash = htole32(
-	    ((uint32_t)cnp->cn_namelen + 1) & DREC_NLEN_MASK);
+	key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
+	    ((uint32_t)cnp->cn_namelen + 1));
 	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
 	key->name[cnp->cn_namelen] = '\0';
 
