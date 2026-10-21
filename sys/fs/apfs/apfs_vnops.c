@@ -63,14 +63,25 @@ apfs_vop_lookup(void *v)
 	j_drec_val_t val;
 	int error;
 
+	printf("apfs_lookup: dir 0x%llx name '%.*s' len %u\n",
+	    (unsigned long long)dnode->a_oid, (int)cnp->cn_namelen,
+	    cnp->cn_nameptr, cnp->cn_namelen);
 	if (cnp->cn_nameptr[0] == '.') {
 		if (cnp->cn_namelen == 1) {
 			*ap->a_vpp = dvp;
 			vref(dvp);
+			printf("apfs_lookup: dot returns directory vnode %p\n",
+			    dvp);
 			return 0;
 		}
 		if (cnp->cn_namelen == 2 && cnp->cn_nameptr[1] == '.') {
-			return apfs_vget(dvp->v_mount, dnode->a_ino.parent_id, LK_EXCLUSIVE, ap->a_vpp);
+			error = apfs_vget(dvp->v_mount, dnode->a_ino.parent_id,
+			    LK_EXCLUSIVE, ap->a_vpp);
+			printf("apfs_lookup: dotdot parent inode 0x%llx "
+			    "vget error %d vnode %p\n",
+			    (unsigned long long)dnode->a_ino.parent_id, error,
+			    error == 0 ? *ap->a_vpp : NULL);
+			return error;
 		}
 	}
 
@@ -89,8 +100,20 @@ apfs_vop_lookup(void *v)
 	kmem_free(key, sizeof(*key) + cnp->cn_namelen + 1);
 
 	if (error == 0) {
-		return apfs_vget(dvp->v_mount, val.file_id, LK_EXCLUSIVE, ap->a_vpp);
+		printf("apfs_lookup: dir 0x%llx name '%.*s' resolved inode "
+		    "0x%llx\n", (unsigned long long)dnode->a_oid,
+		    (int)cnp->cn_namelen, cnp->cn_nameptr,
+		    (unsigned long long)le64toh(val.file_id));
+		error = apfs_vget(dvp->v_mount, le64toh(val.file_id),
+		    LK_EXCLUSIVE, ap->a_vpp);
+		printf("apfs_lookup: vget inode 0x%llx returned error %d "
+		    "vnode %p\n", (unsigned long long)le64toh(val.file_id),
+		    error, error == 0 ? *ap->a_vpp : NULL);
+		return error;
 	}
+	printf("apfs_lookup: dir 0x%llx name '%.*s' failed: error %d\n",
+	    (unsigned long long)dnode->a_oid, (int)cnp->cn_namelen,
+	    cnp->cn_nameptr, error);
 
 	return error;
 }
@@ -143,6 +166,9 @@ apfs_vop_getattr(void *v)
 	struct vattr *vap = ap->a_vap;
 	struct apfsnode *apnode = VTOA(vp);
 
+	printf("apfs_getattr: begin inode 0x%llx vnode type %d mode 0%o\n",
+	    (unsigned long long)apnode->a_oid, vp->v_type,
+	    apnode->a_ino.mode);
 	vattr_null(vap);
 	vap->va_type = vp->v_type;
 	vap->va_mode = apnode->a_ino.mode;
@@ -164,6 +190,12 @@ apfs_vop_getattr(void *v)
 	vap->va_birthtime.tv_sec = apnode->a_ino.create_time / 1000000000;
 	vap->va_birthtime.tv_nsec = apnode->a_ino.create_time % 1000000000;
 
+	printf("apfs_getattr: done inode 0x%llx type %d mode 0%o "
+	    "size %llu nlink %llu uid %u gid %u\n",
+	    (unsigned long long)apnode->a_oid, vap->va_type, vap->va_mode,
+	    (unsigned long long)vap->va_size,
+	    (unsigned long long)vap->va_nlink, (unsigned int)vap->va_uid,
+	    (unsigned int)vap->va_gid);
 	return 0;
 }
 
@@ -310,16 +342,34 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	uint32_t name_len;
 	int error;
 
-	if (klen < sizeof(*key) || vlen < sizeof(*val))
+	if (klen < sizeof(*key) || vlen < sizeof(*val)) {
+		printf("apfs_readdir_cb: short record key len %zu (min %zu) "
+		    "value len %zu (min %zu)\n", klen, sizeof(*key), vlen,
+		    sizeof(*val));
 		return EINVAL;
+	}
+	printf("apfs_readdir_cb: key len %zu value len %zu skip %d "
+	    "offset %lld resid %zu\n", klen, vlen, ctx->skip,
+	    (long long)ctx->uio->uio_offset, ctx->uio->uio_resid);
 	if (ctx->skip > 0) {
 		ctx->skip--;
 		return 0;
 	}
 
 	name_len = le32toh(key->name_len_and_hash) & DREC_NLEN_MASK;
-	if (name_len == 0 || name_len > klen - sizeof(*key))
+	if (name_len == 0 || name_len > klen - sizeof(*key)) {
+		printf("apfs_readdir_cb: invalid name length %u key len %zu "
+		    "raw name/hash 0x%x\n", name_len, klen,
+		    le32toh(key->name_len_and_hash));
 		return EINVAL;
+	}
+	printf("apfs_readdir_cb: record parent 0x%llx type 0x%llx "
+	    "name length %u file id 0x%llx flags 0x%x\n",
+	    (unsigned long long)(le64toh(key->obj_id_and_type) & OBJ_ID_MASK),
+	    (unsigned long long)((le64toh(key->obj_id_and_type) &
+	    OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT),
+	    name_len, (unsigned long long)le64toh(val->file_id),
+	    le16toh(val->flags));
 	memset(&de, 0, sizeof(de));
 	de.d_fileno = le64toh(val->file_id);
 	de.d_namlen = name_len - 1;
@@ -330,15 +380,28 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	de.d_name[name_to_copy] = '\0';
 	de.d_reclen = _DIRENT_SIZE(&de);
 
-	if (ctx->uio->uio_resid < de.d_reclen)
+	if (ctx->uio->uio_resid < de.d_reclen) {
+		printf("apfs_readdir_cb: buffer full for '%.*s' need %u "
+		    "have %zu\n", (int)name_to_copy, de.d_name,
+		    de.d_reclen, ctx->uio->uio_resid);
 		return EJUSTRETURN; /* Stop iteration, but not an error */
+	}
 
+	printf("apfs_readdir_cb: emitting '%.*s' reclen %u offset %lld "
+	    "resid %zu\n", (int)name_to_copy, de.d_name, de.d_reclen,
+	    (long long)ctx->uio->uio_offset, ctx->uio->uio_resid);
 	error = uiomove(&de, de.d_reclen, ctx->uio);
-	if (error)
+	if (error) {
+		printf("apfs_readdir_cb: uiomove for '%.*s' failed: %d\n",
+		    (int)name_to_copy, de.d_name, error);
 		return error;
+	}
 
 	ctx->count++;
 	ctx->uio->uio_offset++;
+	printf("apfs_readdir_cb: emitted '%.*s' new offset %lld "
+	    "resid %zu\n", (int)name_to_copy, de.d_name,
+	    (long long)ctx->uio->uio_offset, ctx->uio->uio_resid);
 	return 0;
 }
 
@@ -354,6 +417,9 @@ apfs_vop_readdir(void *v)
 
 	if (vp->v_type != VDIR)
 		return ENOTDIR;
+	printf("apfs_readdir: dir 0x%llx offset %lld resid %zu "
+	    "uio_rw %d\n", (unsigned long long)apnode->a_oid,
+	    (long long)uio->uio_offset, uio->uio_resid, uio->uio_rw);
 
 	/* 1. Handle . and .. */
 	if (uio->uio_offset == 0) {
@@ -363,10 +429,21 @@ apfs_vop_readdir(void *v)
 		de.d_namlen = 1;
 		strlcpy(de.d_name, ".", sizeof(de.d_name));
 		de.d_reclen = _DIRENT_SIZE(&de);
-		if (uio->uio_resid < de.d_reclen) return 0;
+		if (uio->uio_resid < de.d_reclen) {
+			printf("apfs_readdir: no space for dot entry need %u "
+			    "have %zu\n", de.d_reclen, uio->uio_resid);
+			return 0;
+		}
+		printf("apfs_readdir: emitting dot entry reclen %u\n",
+		    de.d_reclen);
 		error = uiomove(&de, de.d_reclen, uio);
-		if (error) return error;
+		if (error) {
+			printf("apfs_readdir: dot uiomove failed: %d\n", error);
+			return error;
+		}
 		uio->uio_offset++;
+		printf("apfs_readdir: emitted dot new offset %lld resid %zu\n",
+		    (long long)uio->uio_offset, uio->uio_resid);
 	}
 	if (uio->uio_offset == 1) {
 		memset(&de, 0, sizeof(de));
@@ -375,10 +452,22 @@ apfs_vop_readdir(void *v)
 		de.d_namlen = 2;
 		strlcpy(de.d_name, "..", sizeof(de.d_name));
 		de.d_reclen = _DIRENT_SIZE(&de);
-		if (uio->uio_resid < de.d_reclen) return 0;
+		if (uio->uio_resid < de.d_reclen) {
+			printf("apfs_readdir: no space for dotdot entry need %u "
+			    "have %zu\n", de.d_reclen, uio->uio_resid);
+			return 0;
+		}
+		printf("apfs_readdir: emitting dotdot entry reclen %u\n",
+		    de.d_reclen);
 		error = uiomove(&de, de.d_reclen, uio);
-		if (error) return error;
+		if (error) {
+			printf("apfs_readdir: dotdot uiomove failed: %d\n",
+			    error);
+			return error;
+		}
 		uio->uio_offset++;
+		printf("apfs_readdir: emitted dotdot new offset %lld resid "
+		    "%zu\n", (long long)uio->uio_offset, uio->uio_resid);
 	}
 
 	/* 2. Iterate B-tree for DRECs */
@@ -391,6 +480,11 @@ apfs_vop_readdir(void *v)
 	memset(&start_key, 0, sizeof(start_key));
 	start_key.obj_id_and_type = htole64(APFS_KEY(apnode->a_oid,
 	    APFS_TYPE_DIR_REC));
+	printf("apfs_readdir: starting tree iteration dir 0x%llx "
+	    "offset %lld skip %d key 0x%llx\n",
+	    (unsigned long long)apnode->a_oid, (long long)uio->uio_offset,
+	    ctx.skip, (unsigned long long)le64toh(
+	    start_key.obj_id_and_type));
 
 	error = apfs_btree_iterate(apnode->a_amp,
 	    le64toh(apnode->a_amp->am_sb.apfs_omap_oid),
@@ -398,6 +492,9 @@ apfs_vop_readdir(void *v)
 	    sizeof(start_key), apfs_readdir_cb, &ctx);
 
 	if (error == EJUSTRETURN) error = 0;
+	printf("apfs_readdir: dir 0x%llx done error %d emitted %d "
+	    "offset %lld resid %zu\n", (unsigned long long)apnode->a_oid,
+	    error, ctx.count, (long long)uio->uio_offset, uio->uio_resid);
 
 	return error;
 }
