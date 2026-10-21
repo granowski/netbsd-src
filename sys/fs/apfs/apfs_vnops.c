@@ -180,6 +180,10 @@ apfs_vop_lookup(void *v)
 	    APFS_DREC_VAL_BASE_SIZE, NULL, 0, NULL);
 	kmem_free(key, sizeof(*key) + cnp->cn_namelen + 1);
 
+	if (error == ENOENT && (cnp->cn_flags & ISLASTCN) != 0 &&
+	    cnp->cn_nameiop == CREATE)
+		return EJUSTRETURN;
+
 	if (error == 0) {
 		printf("apfs_lookup: dir 0x%llx name '%.*s' resolved inode "
 		    "0x%llx\n", (unsigned long long)dnode->a_oid,
