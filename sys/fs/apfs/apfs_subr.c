@@ -1113,6 +1113,32 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 brelse(bp, 0);
                 return EINVAL;
             }
+            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE &&
+                key_len >= sizeof(uint64_t) &&
+                (((le64toh(*(const uint64_t *)key) & OBJ_TYPE_MASK) >>
+                OBJ_TYPE_SHIFT) == APFS_TYPE_INODE)) {
+                const j_inode_val_t *inode = v_ptr;
+                const uint8_t *raw = v_ptr;
+                size_t xfield_len = v_len > sizeof(*inode) ?
+                    v_len - sizeof(*inode) : 0;
+                size_t dump_len = MIN(xfield_len, (size_t)128);
+
+                printf("apfs_btree_search: inode 0x%llx value len %zu "
+                    "fixed len %zu xfield bytes %zu\n",
+                    (unsigned long long)(le64toh(
+                    *(const uint64_t *)key) & OBJ_ID_MASK),
+                    v_len, sizeof(*inode), xfield_len);
+                if (dump_len != 0) {
+                    printf("apfs_btree_search: inode 0x%llx xfield raw:",
+                        (unsigned long long)(le64toh(
+                        *(const uint64_t *)key) & OBJ_ID_MASK));
+                    for (size_t i = 0; i < dump_len; i++)
+                        printf(" %02x", raw[sizeof(*inode) + i]);
+                    if (dump_len < xfield_len)
+                        printf(" ...");
+                    printf("\n");
+                }
+            }
             memset(val, 0, val_size);
             memcpy(val, v_ptr, MIN(v_len, val_size));
             if (found_key != NULL) {
