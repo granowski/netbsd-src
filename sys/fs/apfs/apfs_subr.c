@@ -804,6 +804,11 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 have_expected_hash = true;
             } else if ((node_flags & BTNODE_NOHEADER) != 0 ||
                 node_type != OBJ_BTREE) {
+                printf("apfs_btree_search: invalid root node for tree "
+                    "0x%llx at block %lld (type 0x%x flags 0x%x "
+                    "subtype 0x%x)\n",
+                    (unsigned long long)tree_oid, (long long)paddr,
+                    node_type, node_flags, tree_subtype);
                 brelse(bp, 0);
                 return EINVAL;
             }
@@ -812,12 +817,30 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             node_type != OBJ_BTREE_NODE) ||
             (((tree_flags & BTREE_HASHED) != 0) &&
             ((node_flags & BTNODE_NOHEADER) == 0))) {
+            printf("apfs_btree_search: invalid child node for tree "
+                "0x%llx at block %lld (type 0x%x flags 0x%x "
+                "subtype 0x%x tree flags 0x%x)\n",
+                (unsigned long long)tree_oid, (long long)paddr,
+                node_type, node_flags, tree_subtype, tree_flags);
             brelse(bp, 0);
             return EINVAL;
+        }
+        if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE) {
+            printf("apfs_btree_search: filesystem tree 0x%llx node "
+                "block %lld oid 0x%llx type 0x%x subtype 0x%x "
+                "flags 0x%x level %u keys %u tree flags 0x%x\n",
+                (unsigned long long)tree_oid, (long long)paddr,
+                (unsigned long long)le64toh(node->btn_o.o_oid),
+                node_type, le32toh(node->btn_o.o_subtype), node_flags,
+                le16toh(node->btn_level), nkeys, tree_flags);
         }
         if ((tree_flags & BTREE_HASHED) != 0 &&
             (node_flags & BTNODE_LEAF) == 0 &&
             (node_flags & BTNODE_HASHED) == 0) {
+            printf("apfs_btree_search: unhashed internal node in hashed "
+                "tree 0x%llx at block %lld (flags 0x%x)\n",
+                (unsigned long long)tree_oid, (long long)paddr,
+                node_flags);
             brelse(bp, 0);
             return EINVAL;
         }
@@ -832,10 +855,20 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             }
             have_expected_hash = false;
         } else if (!apfs_checksum_valid(amp, node)) {
+            printf("apfs_btree_search: invalid checksum for tree "
+                "0x%llx node at block %lld (type 0x%x oid 0x%llx)\n",
+                (unsigned long long)tree_oid, (long long)paddr,
+                node_type,
+                (unsigned long long)le64toh(node->btn_o.o_oid));
             brelse(bp, 0);
             return EINVAL;
         }
         if (++steps > node_limit + 1 || nkeys == 0) {
+            printf("apfs_btree_search: invalid node count for tree "
+                "0x%llx at block %lld (steps %llu limit %llu keys %u)\n",
+                (unsigned long long)tree_oid, (long long)paddr,
+                (unsigned long long)steps,
+                (unsigned long long)node_limit, nkeys);
             brelse(bp, 0);
             return EINVAL;
         }
@@ -843,13 +876,17 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
         int low = 0, high = (int)nkeys - 1;
         int mid, last_match = -1, cmp;
         const void *k_ptr, *v_ptr;
-        size_t k_len, v_len;
+        size_t k_len = 0, v_len = 0;
 
         while (low <= high) {
             mid = (low + high) / 2;
             error = apfs_btree_entry(amp, node, &info, mid, &k_ptr,
                 &k_len, &v_ptr, &v_len);
             if (error != 0) {
+                printf("apfs_btree_search: invalid entry %d in tree "
+                    "0x%llx node block %lld: error %d\n", mid,
+                    (unsigned long long)tree_oid, (long long)paddr,
+                    error);
                 brelse(bp, 0);
                 return error;
             }
@@ -872,6 +909,10 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             error = apfs_btree_entry(amp, node, &info, last_match,
                 &k_ptr, &k_len, &v_ptr, &v_len);
             if (error != 0) {
+                printf("apfs_btree_search: invalid selected entry %d in "
+                    "tree 0x%llx node block %lld: error %d\n",
+                    last_match, (unsigned long long)tree_oid,
+                    (long long)paddr, error);
                 brelse(bp, 0);
                 return error;
             }
@@ -894,6 +935,10 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                     (uint64_t)omap_val->ov_paddr));
             }
             if (v_len < val_size) {
+                printf("apfs_btree_search: value too short in tree "
+                    "0x%llx node block %lld entry %d (%zu < %zu)\n",
+                    (unsigned long long)tree_oid, (long long)paddr,
+                    last_match, v_len, val_size);
                 brelse(bp, 0);
                 return EINVAL;
             }
@@ -937,6 +982,11 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             if (error != 0 ||
                 v_len < ((tree_flags & BTREE_HASHED) != 0 ?
                 sizeof(btree_index_node_val_t) : sizeof(oid_t))) {
+                printf("apfs_btree_search: invalid child entry %d in "
+                    "tree 0x%llx node block %lld (error %d value size "
+                    "%zu tree flags 0x%x)\n", mid,
+                    (unsigned long long)tree_oid, (long long)paddr,
+                    error, v_len, tree_flags);
                 brelse(bp, 0);
                 return error != 0 ? error : EINVAL;
             }
@@ -964,8 +1014,13 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
             brelse(bp, 0);
             error = apfs_btree_resolve_child(amp, omap_oid, tree_flags,
                 child_oid, &paddr);
-            if (error != 0)
+            if (error != 0) {
+                printf("apfs_btree_search: cannot resolve child 0x%llx "
+                    "of tree 0x%llx: error %d\n",
+                    (unsigned long long)child_oid,
+                    (unsigned long long)tree_oid, error);
                 return error;
+            }
         }
     }
 }
