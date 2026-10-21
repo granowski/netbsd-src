@@ -294,6 +294,7 @@ typedef struct btree_node_phys {
 #define APFS_TYPE_INODE     0x3
 #define APFS_TYPE_DIR_REC   0x9
 #define APFS_TYPE_EXTENT    0x8
+#define APFS_ROOT_INO       2
 
 typedef struct j_key {
     uint64_t obj_id_and_type;

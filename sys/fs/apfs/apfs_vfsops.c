@@ -538,7 +538,7 @@ apfs_unmount(struct mount *mp, int mntflags)
 int
 apfs_root(struct mount *mp, int lktype, struct vnode **vpp)
 {
-	return VFS_VGET(mp, 2, lktype, vpp);
+	return VFS_VGET(mp, APFS_ROOT_INO, lktype, vpp);
 }
 
 int
@@ -654,6 +654,8 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	case S_IFSOCK: vp->v_type = VSOCK; break;
 	default: vp->v_type = VNON; break;
 	}
+	if (ino == APFS_ROOT_INO)
+		vp->v_vflag |= VV_ROOT;
 	printf("apfs_loadvnode: inode 0x%llx loaded parent 0x%llx "
 	    "mode 0%o vnode type %d size %llu nchildren %d "
 	    "owner %u group %u flags 0x%x\n",
