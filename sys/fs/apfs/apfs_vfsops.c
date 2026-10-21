@@ -21,7 +21,7 @@
 
 #include <fs/apfs/apfs.h>
 
-static int apfs_loadvnode(struct mount *, struct vnode *, const void *,
+int apfs_loadvnode(struct mount *, struct vnode *, const void *,
     size_t, const void **);
 
 MODULE(MODULE_CLASS_VFS, apfs, NULL);
@@ -589,7 +589,7 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	return error;
 }
 
-static int
+int
 apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
     size_t key_len, const void **new_key)
 {
