@@ -75,8 +75,8 @@ apfs_vop_lookup(void *v)
 	}
 
 	key = kmem_alloc(sizeof(*key) + cnp->cn_namelen + 1, KM_SLEEP);
-	key->obj_id_and_type = htole64(((uint64_t)dnode->a_oid << 4) |
-	    APFS_TYPE_DIR_REC);
+	key->obj_id_and_type = htole64(APFS_KEY(dnode->a_oid,
+	    APFS_TYPE_DIR_REC));
 	key->name_len_and_hash = htole32(
 	    ((uint32_t)cnp->cn_namelen + 1) & DREC_NLEN_MASK);
 	memcpy(key->name, cnp->cn_nameptr, cnp->cn_namelen);
@@ -195,8 +195,8 @@ apfs_vop_read(void *v)
 		return EISDIR;
 
 	while (uio->uio_resid > 0 && uio->uio_offset < apnode->a_ino.uncompressed_size) {
-		key.obj_id_and_type = htole64(
-		    ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT);
+		key.obj_id_and_type = htole64(APFS_KEY(apnode->a_oid,
+		    APFS_TYPE_EXTENT));
 		key.logical_addr = htole64(uio->uio_offset);
 
 		error = apfs_btree_search(amp,
@@ -389,8 +389,8 @@ apfs_vop_readdir(void *v)
 
 	j_drec_key_t start_key;
 	memset(&start_key, 0, sizeof(start_key));
-	start_key.obj_id_and_type = htole64(
-	    ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_DIR_REC);
+	start_key.obj_id_and_type = htole64(APFS_KEY(apnode->a_oid,
+	    APFS_TYPE_DIR_REC));
 
 	error = apfs_btree_iterate(apnode->a_amp,
 	    le64toh(apnode->a_amp->am_sb.apfs_omap_oid),
@@ -476,8 +476,8 @@ apfs_vop_bmap(void *v)
 	if (ap->a_bnp == NULL)
 		return 0;
 
-	key.obj_id_and_type = htole64(
-	    ((uint64_t)apnode->a_oid << 4) | APFS_TYPE_EXTENT);
+	key.obj_id_and_type = htole64(APFS_KEY(apnode->a_oid,
+	    APFS_TYPE_EXTENT));
 	key.logical_addr = htole64(
 	    (uint64_t)ap->a_bn * amp->am_block_size);
 

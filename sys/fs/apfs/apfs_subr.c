@@ -610,7 +610,7 @@ apfs_key_compare(uint32_t type, const void *k1, size_t k1_len, const void *k2, s
     if (kt1 > kt2) return 1;
 
     /* Type and OID match, check subtypes */
-    uint32_t subtype = kt1 & OBJ_TYPE_MASK;
+    uint32_t subtype = (kt1 & OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT;
 
     if (subtype == APFS_TYPE_DIR_REC) {
         if (k1_len < 12 || k2_len < 12) return 0; /* Should not happen for full keys */
@@ -852,10 +852,13 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                         MIN(key_len - sizeof(key0), sizeof(key1)));
                 printf("apfs_btree_search: filesystem tree 0x%llx "
                     "request key len %zu words 0x%llx/0x%llx "
-                    "value size %zu\n",
+                    "oid 0x%llx type 0x%llx value size %zu\n",
                     (unsigned long long)tree_oid, key_len,
                     (unsigned long long)le64toh(key0),
-                    (unsigned long long)le64toh(key1), val_size);
+                    (unsigned long long)le64toh(key1),
+                    (unsigned long long)(le64toh(key0) & OBJ_ID_MASK),
+                    (unsigned long long)((le64toh(key0) & OBJ_TYPE_MASK) >>
+                    OBJ_TYPE_SHIFT), val_size);
             }
         }
         if ((tree_flags & BTREE_HASHED) != 0 &&
@@ -923,10 +926,15 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                     memcpy(&entry_key0, k_ptr, sizeof(entry_key0));
                 printf("apfs_btree_search: filesystem tree 0x%llx "
                     "block %lld %s probe %d key len %zu word 0x%llx "
-                    "value len %zu cmp %d range %d..%d\n",
+                    "oid 0x%llx type 0x%llx value len %zu cmp %d "
+                    "range %d..%d\n",
                     (unsigned long long)tree_oid, (long long)paddr,
                     (node_flags & BTNODE_LEAF) != 0 ? "leaf" : "node",
                     mid, k_len, (unsigned long long)le64toh(entry_key0),
+                    (unsigned long long)(le64toh(entry_key0) &
+                    OBJ_ID_MASK),
+                    (unsigned long long)((le64toh(entry_key0) &
+                    OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT),
                     v_len, cmp, low, high);
             }
 
@@ -946,7 +954,8 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 uint64_t requested_key = 0;
 
                 memcpy(&requested_key, key, sizeof(requested_key));
-                if ((le64toh(requested_key) & OBJ_TYPE_MASK) ==
+                if (((le64toh(requested_key) & OBJ_TYPE_MASK) >>
+                    OBJ_TYPE_SHIFT) ==
                     APFS_TYPE_INODE) {
                     printf("apfs_btree_search: dumping %u leaf entries "
                         "for inode key 0x%llx in block %lld\n",
@@ -1031,7 +1040,8 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 if (le64toh(requested->ok_oid) != le64toh(found->ok_oid) ||
                     le64toh(found->ok_xid) > le64toh(requested->ok_xid))
                     match_error = ENOENT;
-            } else if ((le64toh(*(uint64_t *)key) & OBJ_TYPE_MASK) ==
+            } else if (((le64toh(*(uint64_t *)key) & OBJ_TYPE_MASK) >>
+                OBJ_TYPE_SHIFT) ==
                 APFS_TYPE_EXTENT) {
                 if (apfs_key_compare(
                     tree_subtype, key, key_len, k_ptr,

@@ -604,8 +604,7 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 		return EINVAL;
 	memcpy(&ino, key_data, sizeof(ino));
 
-	key.obj_id_and_type = htole64(((uint64_t)ino << 4) |
-	    APFS_TYPE_INODE);
+	key.obj_id_and_type = htole64(APFS_KEY(ino, APFS_TYPE_INODE));
 	error = apfs_btree_search(amp,
 	    le64toh(amp->am_sb.apfs_omap_oid),
 	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key), &val,
@@ -655,6 +654,15 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	case S_IFSOCK: vp->v_type = VSOCK; break;
 	default: vp->v_type = VNON; break;
 	}
+	printf("apfs_loadvnode: inode 0x%llx loaded parent 0x%llx "
+	    "mode 0%o vnode type %d size %llu nchildren %d "
+	    "owner %u group %u flags 0x%x\n",
+	    (unsigned long long)ino,
+	    (unsigned long long)apnode->a_ino.parent_id,
+	    apnode->a_ino.mode, vp->v_type,
+	    (unsigned long long)apnode->a_ino.uncompressed_size,
+	    apnode->a_ino.nchildren, apnode->a_ino.owner,
+	    apnode->a_ino.group, apnode->a_ino.bsd_flags);
 
 	genfs_node_init(vp, &apfs_genfsops);
 	uvm_vnp_setsize(vp, apnode->a_ino.uncompressed_size);

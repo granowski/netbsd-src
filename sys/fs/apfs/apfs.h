@@ -304,9 +304,12 @@ typedef struct j_extent_key {
     uint64_t logical_addr;
 } j_extent_key_t;
 
-#define OBJ_ID_MASK   0xfffffffffffffff0ULL
-#define OBJ_TYPE_MASK 0x000000000000000fULL
-#define OBJ_TYPE_SHIFT 0
+#define OBJ_ID_MASK   0x0fffffffffffffffULL
+#define OBJ_TYPE_MASK 0xf000000000000000ULL
+#define OBJ_TYPE_SHIFT 60
+#define APFS_KEY(oid, type) \
+    ((((uint64_t)(oid)) & OBJ_ID_MASK) | \
+    (((uint64_t)(type) << OBJ_TYPE_SHIFT) & OBJ_TYPE_MASK))
 
 typedef struct j_inode_val {
     uint64_t parent_id;
