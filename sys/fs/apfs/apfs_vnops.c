@@ -96,7 +96,8 @@ apfs_vop_lookup(void *v)
 	error = apfs_btree_search(dnode->a_amp,
 	    le64toh(dnode->a_amp->am_sb.apfs_omap_oid),
 	    le64toh(dnode->a_amp->am_sb.apfs_root_tree_oid), key,
-	    sizeof(*key) + cnp->cn_namelen + 1, &val, sizeof(val), NULL, 0);
+	    sizeof(*key) + cnp->cn_namelen + 1, &val,
+	    APFS_DREC_VAL_BASE_SIZE, NULL, 0);
 	kmem_free(key, sizeof(*key) + cnp->cn_namelen + 1);
 
 	if (error == 0) {
@@ -328,6 +329,7 @@ apfs_vop_rmdir(void *v)
 
 struct apfs_readdir_ctx {
 	struct uio *uio;
+	oid_t dir_oid;
 	int count;
 	int skip;
 };
@@ -340,12 +342,24 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	const j_drec_val_t *val = v;
 	struct dirent de;
 	uint32_t name_len;
+	uint64_t key_word;
+	off_t cookie;
 	int error;
 
-	if (klen < sizeof(*key) || vlen < sizeof(*val)) {
+	if (klen < sizeof(key_word)) {
+		printf("apfs_readdir_cb: short record key len %zu (min %zu)\n",
+		    klen, sizeof(key_word));
+		return EINVAL;
+	}
+	key_word = le64toh(key->obj_id_and_type);
+	if ((key_word & OBJ_ID_MASK) != ctx->dir_oid ||
+	    ((key_word & OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT) !=
+	    APFS_TYPE_DIR_REC)
+		return 0;
+	if (klen < sizeof(*key) || vlen < APFS_DREC_VAL_BASE_SIZE) {
 		printf("apfs_readdir_cb: short record key len %zu (min %zu) "
 		    "value len %zu (min %zu)\n", klen, sizeof(*key), vlen,
-		    sizeof(*val));
+		    (size_t)APFS_DREC_VAL_BASE_SIZE);
 		return EINVAL;
 	}
 	printf("apfs_readdir_cb: key len %zu value len %zu skip %d "
@@ -353,11 +367,13 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	    (long long)ctx->uio->uio_offset, ctx->uio->uio_resid);
 	if (ctx->skip > 0) {
 		ctx->skip--;
+		ctx->uio->uio_offset++;
 		return 0;
 	}
 
 	name_len = le32toh(key->name_len_and_hash) & DREC_NLEN_MASK;
-	if (name_len == 0 || name_len > klen - sizeof(*key)) {
+	if (name_len == 0 || name_len > klen - sizeof(*key) ||
+	    name_len >= sizeof(de.d_name)) {
 		printf("apfs_readdir_cb: invalid name length %u key len %zu "
 		    "raw name/hash 0x%x\n", name_len, klen,
 		    le32toh(key->name_len_and_hash));
@@ -372,7 +388,7 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	    le16toh(val->flags));
 	memset(&de, 0, sizeof(de));
 	de.d_fileno = le64toh(val->file_id);
-	de.d_namlen = name_len - 1;
+	de.d_namlen = name_len;
 	de.d_type = DT_UNKNOWN; /* Could be derived from val->flags */
 	
 	size_t name_to_copy = MIN(de.d_namlen, sizeof(de.d_name) - 1);
@@ -390,6 +406,7 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	printf("apfs_readdir_cb: emitting '%.*s' reclen %u offset %lld "
 	    "resid %zu\n", (int)name_to_copy, de.d_name, de.d_reclen,
 	    (long long)ctx->uio->uio_offset, ctx->uio->uio_resid);
+	cookie = ctx->uio->uio_offset;
 	error = uiomove(&de, de.d_reclen, ctx->uio);
 	if (error) {
 		printf("apfs_readdir_cb: uiomove for '%.*s' failed: %d\n",
@@ -398,7 +415,7 @@ apfs_readdir_cb(void *arg, const void *k, size_t klen, const void *v, size_t vle
 	}
 
 	ctx->count++;
-	ctx->uio->uio_offset++;
+	ctx->uio->uio_offset = cookie + 1;
 	printf("apfs_readdir_cb: emitted '%.*s' new offset %lld "
 	    "resid %zu\n", (int)name_to_copy, de.d_name,
 	    (long long)ctx->uio->uio_offset, ctx->uio->uio_resid);
@@ -417,6 +434,10 @@ apfs_vop_readdir(void *v)
 
 	if (vp->v_type != VDIR)
 		return ENOTDIR;
+	if (uio->uio_offset < 0)
+		return EINVAL;
+	if (ap->a_eofflag != NULL)
+		*ap->a_eofflag = 0;
 	printf("apfs_readdir: dir 0x%llx offset %lld resid %zu "
 	    "uio_rw %d\n", (unsigned long long)apnode->a_oid,
 	    (long long)uio->uio_offset, uio->uio_resid, uio->uio_rw);
@@ -441,7 +462,7 @@ apfs_vop_readdir(void *v)
 			printf("apfs_readdir: dot uiomove failed: %d\n", error);
 			return error;
 		}
-		uio->uio_offset++;
+		uio->uio_offset = 1;
 		printf("apfs_readdir: emitted dot new offset %lld resid %zu\n",
 		    (long long)uio->uio_offset, uio->uio_resid);
 	}
@@ -465,7 +486,7 @@ apfs_vop_readdir(void *v)
 			    error);
 			return error;
 		}
-		uio->uio_offset++;
+		uio->uio_offset = 2;
 		printf("apfs_readdir: emitted dotdot new offset %lld resid "
 		    "%zu\n", (long long)uio->uio_offset, uio->uio_resid);
 	}
@@ -473,8 +494,9 @@ apfs_vop_readdir(void *v)
 	/* 2. Iterate B-tree for DRECs */
 	struct apfs_readdir_ctx ctx;
 	ctx.uio = uio;
+	ctx.dir_oid = apnode->a_oid;
 	ctx.count = 0;
-	ctx.skip = uio->uio_offset - 2;
+	ctx.skip = uio->uio_offset > 2 ? uio->uio_offset - 2 : 0;
 
 	j_drec_key_t start_key;
 	memset(&start_key, 0, sizeof(start_key));

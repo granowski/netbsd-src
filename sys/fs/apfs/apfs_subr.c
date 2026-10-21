@@ -1196,284 +1196,251 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
 int
 apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *start_key, size_t key_len, apfs_btree_iter_cb cb, void *arg)
 {
-    struct buf *bp;
-    btree_node_phys_t *node;
-    apfs_paddr_t paddr;
-    btree_info_t info;
-    uint32_t tree_flags = 0;
-    uint32_t tree_subtype = 0;
-    bool have_info = false;
-    uint8_t expected_hash[BTREE_NODE_HASH_SIZE_MAX];
-    uint8_t calculated_hash[BTREE_NODE_HASH_SIZE_MAX];
-    bool have_expected_hash = false;
-    int error, i;
-    size_t current_k_len = key_len;
+	struct apfs_btree_iter_frame {
+		apfs_paddr_t paddr;
+		uint32_t next_child;
+		bool is_root;
+		bool initialized;
+		bool have_expected_hash;
+		uint8_t expected_hash[BTREE_NODE_HASH_SIZE_MAX];
+	};
+	enum { APFS_BTREE_MAX_DEPTH = 64 };
+	struct apfs_btree_iter_frame *stack;
+	struct buf *bp;
+	btree_node_phys_t *node;
+	btree_info_t info;
+	apfs_paddr_t root_paddr;
+	uint32_t tree_flags, tree_subtype;
+	uint64_t node_count, visited_nodes = 1;
+	uint8_t calculated_hash[BTREE_NODE_HASH_SIZE_MAX];
+	size_t depth = 0;
+	int error;
 
-    if (key_len > amp->am_block_size)
-        return EINVAL;
+	if (key_len > amp->am_block_size)
+		return EINVAL;
+	if (amp->am_hash_size > sizeof(calculated_hash))
+		return EINVAL;
 
-    void *found_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
-    void *current_k = kmem_alloc(amp->am_block_size, KM_SLEEP);
-    void *current_v = kmem_alloc(amp->am_block_size, KM_SLEEP);
+	stack = kmem_alloc(sizeof(*stack) * APFS_BTREE_MAX_DEPTH, KM_SLEEP);
+	root_paddr = tree_oid;
+	if (tree_oid != omap_oid && omap_oid != 0) {
+		error = apfs_omap_lookup(amp, omap_oid, tree_oid,
+		    amp->am_checkpoint_xid, &root_paddr);
+		if (error)
+			goto out;
+	}
 
-    memcpy(current_k, start_key, key_len);
-    uint64_t start_word = 0;
-    if (key_len >= sizeof(start_word))
-        memcpy(&start_word, start_key, sizeof(start_word));
-    printf("apfs_btree_iterate: tree 0x%llx start key len %zu "
-        "word 0x%llx oid 0x%llx type 0x%llx\n",
-        (unsigned long long)tree_oid, key_len,
-        (unsigned long long)le64toh(start_word),
-        (unsigned long long)(le64toh(start_word) & OBJ_ID_MASK),
-        (unsigned long long)((le64toh(start_word) & OBJ_TYPE_MASK) >>
-        OBJ_TYPE_SHIFT));
+	error = apfs_bread(amp, root_paddr, &bp);
+	if (error)
+		goto out;
+	node = (btree_node_phys_t *)bp->b_data;
+	uint16_t root_flags = le16toh(node->btn_flags);
+	if ((root_flags & BTNODE_ROOT) == 0) {
+		brelse(bp, 0);
+		error = EINVAL;
+		goto out;
+	}
+	memcpy(&info, (uint8_t *)node + amp->am_block_size - sizeof(info),
+	    sizeof(info));
+	tree_flags = le32toh(info.bt_flags);
+	tree_subtype = (root_flags & BTNODE_NOHEADER) ? OBJ_FSTREE :
+	    le32toh(node->btn_o.o_subtype);
+	node_count = le64toh(info.bt_node_count);
+	if ((tree_flags & (BTREE_PHYSICAL | BTREE_EPHEMERAL)) ==
+	    (BTREE_PHYSICAL | BTREE_EPHEMERAL) ||
+	    (((tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) != 0) &&
+	    (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) !=
+	    (BTREE_HASHED | BTREE_NOHEADER)) ||
+	    le32toh(info.bt_node_size) != amp->am_block_size ||
+	    node_count == 0) {
+		brelse(bp, 0);
+		error = EOPNOTSUPP;
+		goto out;
+	}
+	if ((tree_flags & BTREE_HASHED) != 0) {
+		if (!amp->am_sealed || (root_flags & BTNODE_NOHEADER) == 0) {
+			brelse(bp, 0);
+			error = EOPNOTSUPP;
+			goto out;
+		}
+	} else if ((root_flags & BTNODE_NOHEADER) != 0 ||
+	    (le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) != OBJ_BTREE) {
+		brelse(bp, 0);
+		error = EINVAL;
+		goto out;
+	}
+	brelse(bp, 0);
 
-    while (1) {
-        /* 1. Find the leaf node containing current_k */
-        /* This is a bit inefficient but safe: we re-traverse for each leaf */
-        error = apfs_btree_search(amp, omap_oid, tree_oid, current_k,
-            current_k_len, current_v, amp->am_block_size, found_k,
-            amp->am_block_size);
-        printf("apfs_btree_iterate: tree 0x%llx search returned %d "
-            "for current key len %zu\n",
-            (unsigned long long)tree_oid, error, current_k_len);
-        if (error && error != ENOENT) goto out;
+	memset(&stack[0], 0, sizeof(stack[0]));
+	stack[0].paddr = root_paddr;
+	stack[0].is_root = true;
+	if ((tree_flags & BTREE_HASHED) != 0) {
+		memcpy(stack[0].expected_hash, amp->am_root_hash,
+		    sizeof(stack[0].expected_hash));
+		stack[0].have_expected_hash = true;
+	}
+	depth = 1;
+	error = 0;
 
-        /* Resolve paddr of the leaf again (btree_search doesn't return it) */
-        /* We'll duplicate the search logic here to keep the buf */
-        paddr = tree_oid;
-        if (tree_oid != omap_oid && omap_oid != 0) {
-            error = apfs_omap_lookup(amp, omap_oid, tree_oid,
-                amp->am_checkpoint_xid, &paddr);
-            if (error)
-                goto out;
-        }
+	while (depth != 0) {
+		struct apfs_btree_iter_frame *frame = &stack[depth - 1];
+		uint16_t node_flags;
+		uint32_t nkeys;
 
-        while (1) {
-            error = apfs_bread(amp, paddr, &bp);
-            if (error) goto out;
-            node = (btree_node_phys_t *)bp->b_data;
-            uint16_t node_flags = le16toh(node->btn_flags);
-            printf("apfs_btree_iterate: tree 0x%llx visiting block %lld "
-                "oid 0x%llx type 0x%x flags 0x%x level %u keys %u\n",
-                (unsigned long long)tree_oid, (long long)paddr,
-                (unsigned long long)le64toh(node->btn_o.o_oid),
-                le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK,
-                node_flags, le16toh(node->btn_level),
-                le32toh(node->btn_nkeys));
-            if (node_flags & BTNODE_ROOT) {
-                memcpy(&info, (uint8_t *)node + amp->am_block_size -
-                    sizeof(info), sizeof(info));
-                tree_flags = le32toh(info.bt_flags);
-                tree_subtype = (node_flags & BTNODE_NOHEADER) ?
-                    OBJ_FSTREE : le32toh(node->btn_o.o_subtype);
-                have_info = true;
-                if ((tree_flags & (BTREE_PHYSICAL | BTREE_EPHEMERAL)) ==
-                    (BTREE_PHYSICAL | BTREE_EPHEMERAL) ||
-                    (((tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) != 0) &&
-                    (tree_flags & (BTREE_HASHED | BTREE_NOHEADER)) !=
-                    (BTREE_HASHED | BTREE_NOHEADER)) ||
-                    le32toh(info.bt_node_size) != amp->am_block_size ||
-                    le64toh(info.bt_node_count) == 0) {
-                    brelse(bp, 0);
-                    error = EOPNOTSUPP;
-                    goto out;
-                }
-                if ((tree_flags & BTREE_HASHED) != 0) {
-                    if (!amp->am_sealed ||
-                        (node_flags & BTNODE_NOHEADER) == 0) {
-                        brelse(bp, 0);
-                        error = EOPNOTSUPP;
-                        goto out;
-                    }
-                    memcpy(expected_hash, amp->am_root_hash,
-                        sizeof(expected_hash));
-                    have_expected_hash = true;
-                } else if ((node_flags & BTNODE_NOHEADER) != 0 ||
-                    (le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) !=
-                    OBJ_BTREE) {
-                    brelse(bp, 0);
-                    error = EINVAL;
-                    goto out;
-                }
-            } else if (!have_info ||
-                (((tree_flags & BTREE_HASHED) == 0) &&
-                (le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) !=
-                OBJ_BTREE_NODE) ||
-                (((tree_flags & BTREE_HASHED) != 0) &&
-                ((node_flags & BTNODE_NOHEADER) == 0))) {
-                brelse(bp, 0);
-                error = EINVAL;
-                goto out;
-            }
-            if ((tree_flags & BTREE_HASHED) != 0 &&
-                (node_flags & BTNODE_LEAF) == 0 &&
-                (node_flags & BTNODE_HASHED) == 0) {
-                brelse(bp, 0);
-                error = EINVAL;
-                goto out;
-            }
-            if ((tree_flags & BTREE_HASHED) != 0) {
-                if (!have_expected_hash ||
-                    apfs_hash_data(amp, node, amp->am_block_size,
-                    calculated_hash) != 0 ||
-                    memcmp(calculated_hash, expected_hash,
-                    amp->am_hash_size) != 0) {
-                    brelse(bp, 0);
-                    error = EAUTH;
-                    goto out;
-                }
-                have_expected_hash = false;
-            } else if (!apfs_checksum_valid(amp, node)) {
-                brelse(bp, 0);
-                error = EINVAL;
-                goto out;
-            }
-            if (node_flags & BTNODE_LEAF)
-                break;
+		error = apfs_bread(amp, frame->paddr, &bp);
+		if (error)
+			goto out;
+		node = (btree_node_phys_t *)bp->b_data;
+		node_flags = le16toh(node->btn_flags);
+		nkeys = le32toh(node->btn_nkeys);
 
-            uint32_t nkeys = le32toh(node->btn_nkeys);
-            int low = 0, high = (int)nkeys - 1, mid;
-            while (low <= high) {
-                mid = (low + high) / 2;
-                const void *k_ptr, *v_ptr;
-                size_t k_len, v_len;
-                error = apfs_btree_entry(amp, node, &info, mid, &k_ptr,
-                    &k_len, &v_ptr, &v_len);
-                if (error) {
-                    brelse(bp, 0);
-                    goto out;
-                }
-                int cmp = apfs_key_compare(tree_subtype,
-                    current_k, current_k_len, k_ptr, k_len);
-                uint64_t separator = 0, requested = 0;
-                if (k_len >= sizeof(separator))
-                    memcpy(&separator, k_ptr, sizeof(separator));
-                if (current_k_len >= sizeof(requested))
-                    memcpy(&requested, current_k, sizeof(requested));
-                if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE)
-                    printf("apfs_btree_iterate: tree 0x%llx block %lld "
-                        "probe %d separator 0x%llx request 0x%llx "
-                        "cmp %d range %d..%d\n",
-                        (unsigned long long)tree_oid, (long long)paddr,
-                        mid, (unsigned long long)le64toh(separator),
-                        (unsigned long long)le64toh(requested), cmp,
-                        low, high);
-                if (cmp < 0)
-                    high = mid - 1;
-                else
-                    low = mid + 1;
-            }
-            i = (low > 0) ? low - 1 : 0;
-            const void *k_ptr, *v_ptr;
-            size_t k_len, v_len;
-            error = apfs_btree_entry(amp, node, &info, i, &k_ptr,
-                &k_len, &v_ptr, &v_len);
-            if (error ||
-                v_len < ((tree_flags & BTREE_HASHED) != 0 ?
-                sizeof(btree_index_node_val_t) : sizeof(oid_t))) {
-                brelse(bp, 0);
-                if (error == 0)
-                    error = EINVAL;
-                goto out;
-            }
-            oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
-            uint64_t separator = 0, requested = 0;
-            if (k_len >= sizeof(separator))
-                memcpy(&separator, k_ptr, sizeof(separator));
-            if (current_k_len >= sizeof(requested))
-                memcpy(&requested, current_k, sizeof(requested));
-            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE)
-                printf("apfs_btree_iterate: tree 0x%llx block %lld "
-                    "chose entry %d separator 0x%llx child 0x%llx "
-                    "request 0x%llx cmp %d\n",
-                    (unsigned long long)tree_oid, (long long)paddr, i,
-                    (unsigned long long)le64toh(separator),
-                    (unsigned long long)child_oid,
-                    (unsigned long long)le64toh(requested),
-                    apfs_key_compare(tree_subtype, current_k,
-                    current_k_len, k_ptr, k_len));
-            if ((tree_flags & BTREE_HASHED) != 0) {
-                const btree_index_node_val_t *index_val = v_ptr;
-                memcpy(expected_hash, index_val->child_hash,
-                    sizeof(expected_hash));
-                have_expected_hash = true;
-            }
-            brelse(bp, 0);
-            error = apfs_btree_resolve_child(amp, omap_oid, tree_flags,
-                child_oid, &paddr);
-            if (error) {
-                printf("apfs_btree_iterate: cannot resolve child 0x%llx "
-                    "in tree 0x%llx: error %d\n",
-                    (unsigned long long)child_oid,
-                    (unsigned long long)tree_oid, error);
-                goto out;
-            }
-        }
+		if (frame->is_root != ((node_flags & BTNODE_ROOT) != 0) ||
+		    (!frame->is_root &&
+		    (((tree_flags & BTREE_HASHED) == 0 &&
+		    (le32toh(node->btn_o.o_type) & OBJECT_TYPE_MASK) !=
+		    OBJ_BTREE_NODE) ||
+		    ((tree_flags & BTREE_HASHED) != 0 &&
+		    (node_flags & BTNODE_NOHEADER) == 0)))) {
+			brelse(bp, 0);
+			error = EINVAL;
+			goto out;
+		}
+		if ((tree_flags & BTREE_HASHED) != 0 &&
+		    (node_flags & BTNODE_LEAF) == 0 &&
+		    (node_flags & BTNODE_HASHED) == 0) {
+			brelse(bp, 0);
+			error = EINVAL;
+			goto out;
+		}
+		if ((tree_flags & BTREE_HASHED) != 0) {
+			if (!frame->have_expected_hash ||
+			    apfs_hash_data(amp, node, amp->am_block_size,
+			    calculated_hash) != 0 ||
+			    memcmp(calculated_hash, frame->expected_hash,
+			    amp->am_hash_size) != 0) {
+				brelse(bp, 0);
+				error = EAUTH;
+				goto out;
+			}
+		} else if (!apfs_checksum_valid(amp, node)) {
+			brelse(bp, 0);
+			error = EINVAL;
+			goto out;
+		}
 
-        /* 2. Iterate all keys in this leaf >= current_k */
-        uint32_t nkeys = le32toh(node->btn_nkeys);
-        if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE)
-            printf("apfs_btree_iterate: tree 0x%llx reached leaf block "
-                "%lld with %u entries, current key len %zu\n",
-                (unsigned long long)tree_oid, (long long)paddr, nkeys,
-                current_k_len);
-        for (i = 0; i < nkeys; i++) {
-            const void *k_ptr, *v_ptr;
-            size_t k_len, v_len;
-            error = apfs_btree_entry(amp, node, &info, i, &k_ptr,
-                &k_len, &v_ptr, &v_len);
-            if (error) {
-                brelse(bp, 0);
-                goto out;
-            }
-            
-            int cmp = apfs_key_compare(tree_subtype,
-                k_ptr, k_len, current_k, current_k_len);
-            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE) {
-                uint64_t entry_word = 0, current_word = 0;
-                if (k_len >= sizeof(entry_word))
-                    memcpy(&entry_word, k_ptr, sizeof(entry_word));
-                if (current_k_len >= sizeof(current_word))
-                    memcpy(&current_word, current_k, sizeof(current_word));
-                printf("apfs_btree_iterate: leaf entry %d key len %zu "
-                    "word 0x%llx current 0x%llx cmp %d value len %zu\n",
-                    i, k_len, (unsigned long long)le64toh(entry_word),
-                    (unsigned long long)le64toh(current_word), cmp, v_len);
-            }
-            if (cmp < 0)
-                continue;
+		if ((node_flags & BTNODE_LEAF) != 0) {
+			uint32_t i;
 
-            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE)
-                printf("apfs_btree_iterate: callback begin entry %d "
-                    "key len %zu value len %zu\n", i, k_len, v_len);
-            error = cb(arg, k_ptr, k_len, v_ptr, v_len);
-            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE)
-                printf("apfs_btree_iterate: callback end entry %d "
-                    "error %d\n", i, error);
-            if (error) {
-                brelse(bp, 0);
-                goto out;
-            }
-            
-            /* Keep track of last key found to advance */
-            memcpy(current_k, k_ptr, k_len);
-            current_k_len = k_len;
-        }
+			printf("apfs_btree_iterate: tree 0x%llx visiting leaf "
+			    "%lld with %u entries\n",
+			    (unsigned long long)tree_oid,
+			    (long long)frame->paddr, nkeys);
+			for (i = 0; i < nkeys; i++) {
+				const void *k_ptr, *v_ptr;
+				size_t k_len, v_len;
 
-        /* 3. Advance to next leaf */
-        brelse(bp, 0);
-        break; /* Simplified */
-    }
-    error = 0;
+				error = apfs_btree_entry(amp, node, &info, i,
+				    &k_ptr, &k_len, &v_ptr, &v_len);
+				if (error)
+					break;
+				if (apfs_key_compare(tree_subtype, k_ptr, k_len,
+				    start_key, key_len) < 0)
+					continue;
+				error = cb(arg, k_ptr, k_len, v_ptr, v_len);
+				if (error)
+					break;
+			}
+			brelse(bp, 0);
+			if (error)
+				goto out;
+			depth--;
+			continue;
+		}
 
+		if (!frame->initialized) {
+			int low = 0, high = (int)nkeys - 1;
+
+			while (low <= high) {
+				int mid = (low + high) / 2;
+				const void *index_key, *index_val;
+				size_t index_key_len, index_val_len;
+
+				error = apfs_btree_entry(amp, node, &info, mid,
+				    &index_key, &index_key_len, &index_val,
+				    &index_val_len);
+				if (error) {
+					brelse(bp, 0);
+					goto out;
+				}
+				if (apfs_key_compare(tree_subtype, start_key,
+				    key_len, index_key, index_key_len) < 0)
+					high = mid - 1;
+				else
+					low = mid + 1;
+			}
+			frame->next_child = low > 0 ? low - 1 : 0;
+			frame->initialized = true;
+		}
+
+		if (frame->next_child >= nkeys) {
+			brelse(bp, 0);
+			depth--;
+			continue;
+		}
+
+		const void *k_ptr, *v_ptr;
+		size_t k_len, v_len;
+		error = apfs_btree_entry(amp, node, &info, frame->next_child++,
+		    &k_ptr, &k_len, &v_ptr, &v_len);
+		if (error ||
+		    v_len < ((tree_flags & BTREE_HASHED) != 0 ?
+		    sizeof(btree_index_node_val_t) : sizeof(oid_t))) {
+			brelse(bp, 0);
+			if (error == 0)
+				error = EINVAL;
+			goto out;
+		}
+
+		oid_t child_oid;
+		memcpy(&child_oid, v_ptr, sizeof(child_oid));
+		child_oid = le64toh(child_oid);
+		uint8_t child_hash[BTREE_NODE_HASH_SIZE_MAX];
+		bool child_has_hash = (tree_flags & BTREE_HASHED) != 0;
+		if (child_has_hash) {
+			const btree_index_node_val_t *index_val = v_ptr;
+
+			memcpy(child_hash, index_val->child_hash,
+			    sizeof(child_hash));
+		}
+		brelse(bp, 0);
+
+		if (depth >= APFS_BTREE_MAX_DEPTH) {
+			error = ELOOP;
+			goto out;
+		}
+		if (++visited_nodes > node_count) {
+			error = EINVAL;
+			goto out;
+		}
+		memset(&stack[depth], 0, sizeof(stack[depth]));
+		error = apfs_btree_resolve_child(amp, omap_oid, tree_flags,
+		    child_oid, &stack[depth].paddr);
+		if (error)
+			goto out;
+		if (child_has_hash) {
+			memcpy(stack[depth].expected_hash, child_hash,
+			    sizeof(child_hash));
+			stack[depth].have_expected_hash = true;
+		}
+		depth++;
+	}
+
+	error = 0;
 out:
-    kmem_free(found_k, amp->am_block_size);
-    kmem_free(current_k, amp->am_block_size);
-    kmem_free(current_v, amp->am_block_size);
-    printf("apfs_btree_iterate: tree 0x%llx returning error %d\n",
-        (unsigned long long)tree_oid, error);
-    return error;
+	kmem_free(stack, sizeof(*stack) * APFS_BTREE_MAX_DEPTH);
+	printf("apfs_btree_iterate: tree 0x%llx returning error %d\n",
+	    (unsigned long long)tree_oid, error);
+	return error;
 }
 
 /* B-Tree Insertion with COW Cascade */

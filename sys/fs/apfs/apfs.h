@@ -344,7 +344,7 @@ typedef struct j_drec_key {
     uint64_t obj_id_and_type;
     uint32_t name_len_and_hash;
     uint8_t  name[0];
-} j_drec_key_t;
+} __attribute__((packed)) j_drec_key_t;
 
 #define DREC_NLEN_MASK 0x000003ff
 #define DREC_HASH_MASK 0xfffffc00
@@ -355,7 +355,9 @@ typedef struct j_drec_val {
     uint64_t date_added;
     uint16_t flags;
     uint16_t xfields_len;
-} j_drec_val_t;
+} __attribute__((packed)) j_drec_val_t;
+
+#define APFS_DREC_VAL_BASE_SIZE offsetof(j_drec_val_t, xfields_len)
 
 /* Extent Records */
 typedef struct j_phys_ext_key {
