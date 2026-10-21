@@ -573,6 +573,68 @@ static const struct genfs_ops apfs_genfsops = {
 	.gop_size = genfs_size,
 };
 
+static int
+apfs_inode_dstream_size(const void *value, size_t value_len, uint64_t *sizep)
+{
+	const uint8_t *xfields;
+	j_xfield_header_t header;
+	size_t xfields_len, data_start, data_offset, data_end;
+	uint16_t num_xfields, used_data;
+
+	if (value_len < sizeof(j_inode_val_t))
+		return EINVAL;
+	xfields = (const uint8_t *)value + sizeof(j_inode_val_t);
+	xfields_len = value_len - sizeof(j_inode_val_t);
+	if (xfields_len == 0)
+		return ENOENT;
+	if (xfields_len < sizeof(header))
+		return EINVAL;
+
+	memcpy(&header, xfields, sizeof(header));
+	num_xfields = le16toh(header.num_xfields);
+	used_data = le16toh(header.used_data);
+	data_start = sizeof(header) +
+	    (size_t)num_xfields * sizeof(j_xfield_t);
+	if (data_start > xfields_len ||
+	    used_data > xfields_len - data_start)
+		return EINVAL;
+	data_offset = data_start;
+	data_end = data_start + used_data;
+
+	for (uint16_t i = 0; i < num_xfields; i++) {
+		j_xfield_t field;
+		uint16_t type, size;
+
+		memcpy(&field, xfields + sizeof(header) +
+		    (size_t)i * sizeof(field), sizeof(field));
+		type = le16toh(field.type) & APFS_XFIELD_TYPE_MASK;
+		size = le16toh(field.size);
+		if (size > data_end - data_offset)
+			return EINVAL;
+
+		if (type == APFS_XFIELD_TYPE_DSTREAM) {
+			j_dstream_t dstream;
+
+			if (size < sizeof(dstream))
+				return EINVAL;
+			memcpy(&dstream, xfields + data_offset,
+			    sizeof(dstream));
+			*sizep = le64toh(dstream.size);
+			return 0;
+		}
+
+		data_offset += size;
+		if (i + 1 < num_xfields) {
+			data_offset = data_start +
+			    roundup(data_offset - data_start, 8);
+			if (data_offset > data_end)
+				return EINVAL;
+		}
+	}
+
+	return ENOENT;
+}
+
 int
 apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 {
@@ -598,6 +660,10 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	ino_t ino;
 	j_key_t key;
 	j_inode_val_t val;
+	uint8_t *inode_value;
+	size_t inode_value_len;
+	uint64_t dstream_size = 0;
+	bool have_dstream_size = false;
 	int error;
 
 	if (key_len != sizeof(ino))
@@ -605,13 +671,30 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	memcpy(&ino, key_data, sizeof(ino));
 
 	key.obj_id_and_type = htole64(APFS_KEY(ino, APFS_TYPE_INODE));
+	inode_value = kmem_alloc(amp->am_block_size, KM_SLEEP);
 	error = apfs_btree_search(amp,
 	    le64toh(amp->am_sb.apfs_omap_oid),
-	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key), &val,
-	    sizeof(val), NULL, 0);
+	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key),
+	    inode_value, amp->am_block_size, NULL, 0, &inode_value_len);
 	if (error) {
+		kmem_free(inode_value, amp->am_block_size);
 		printf("apfs_loadvnode: inode 0x%llx lookup failed: error %d\n",
 		    (unsigned long long)ino, error);
+		return error;
+	}
+	if (inode_value_len < sizeof(val)) {
+		kmem_free(inode_value, amp->am_block_size);
+		return EINVAL;
+	}
+	memcpy(&val, inode_value, sizeof(val));
+	error = apfs_inode_dstream_size(inode_value, inode_value_len,
+	    &dstream_size);
+	kmem_free(inode_value, amp->am_block_size);
+	if (error == 0)
+		have_dstream_size = true;
+	else if (error != ENOENT) {
+		printf("apfs_loadvnode: inode 0x%llx invalid xfields: "
+		    "error %d\n", (unsigned long long)ino, error);
 		return error;
 	}
 
@@ -639,6 +722,9 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	apnode->a_ino.mode = le16toh(apnode->a_ino.mode);
 	apnode->a_ino.uncompressed_size =
 	    le64toh(apnode->a_ino.uncompressed_size);
+	if (have_dstream_size &&
+	    (apnode->a_ino.mode & S_IFMT) == S_IFREG)
+		apnode->a_ino.uncompressed_size = dstream_size;
 
 	vp->v_tag = VT_NON; /* TODO: Add VT_APFS to NetBSD */
 	vp->v_op = apfs_vnodeop_p;
@@ -657,12 +743,13 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	if (ino == APFS_ROOT_INO)
 		vp->v_vflag |= VV_ROOT;
 	printf("apfs_loadvnode: inode 0x%llx loaded parent 0x%llx "
-	    "mode 0%o vnode type %d size %llu nchildren %d "
+	    "mode 0%o vnode type %d size %llu%s nchildren %d "
 	    "owner %u group %u flags 0x%x\n",
 	    (unsigned long long)ino,
 	    (unsigned long long)apnode->a_ino.parent_id,
 	    apnode->a_ino.mode, vp->v_type,
 	    (unsigned long long)apnode->a_ino.uncompressed_size,
+	    have_dstream_size ? " (data stream)" : "",
 	    apnode->a_ino.nchildren, apnode->a_ino.owner,
 	    apnode->a_ino.group, apnode->a_ino.bsd_flags);
 

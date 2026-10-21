@@ -533,7 +533,7 @@ apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, ap
         (unsigned long long)xid, (unsigned long long)tree_oid,
         tree_type);
     error = apfs_btree_search(amp, 0, tree_oid, &key, sizeof(key), &val,
-        sizeof(val), &found_key, sizeof(found_key));
+        sizeof(val), &found_key, sizeof(found_key), NULL);
     if (error == 0) {
         uint32_t flags = le32toh(val.ov_flags);
         uint64_t paddr = le64toh((uint64_t)val.ov_paddr);
@@ -741,7 +741,7 @@ apfs_btree_resolve_child(struct apfsmount *amp, oid_t omap_oid,
 int
 apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
     void *key, size_t key_len, void *val, size_t val_size, void *found_key,
-    size_t found_key_size)
+    size_t found_key_size, size_t *found_val_size)
 {
     struct buf *bp;
     btree_node_phys_t *node;
@@ -761,6 +761,8 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
         val_size == 0 || val_size > amp->am_block_size ||
         (found_key != NULL && found_key_size == 0))
         return EINVAL;
+    if (found_val_size != NULL)
+        *found_val_size = 0;
 
     /* 1. Resolve tree root OID to physical address */
     if (tree_oid == omap_oid || omap_oid == 0) {
@@ -1105,7 +1107,7 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 brelse(bp, 0);
                 return match_error;
             }
-            if (v_len < val_size) {
+            if (found_val_size == NULL && v_len < val_size) {
                 printf("apfs_btree_search: value too short in tree "
                     "0x%llx node block %lld entry %d (%zu < %zu)\n",
                     (unsigned long long)tree_oid, (long long)paddr,
@@ -1113,34 +1115,14 @@ apfs_btree_search(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid,
                 brelse(bp, 0);
                 return EINVAL;
             }
-            if ((tree_subtype & OBJECT_TYPE_MASK) == OBJ_FSTREE &&
-                key_len >= sizeof(uint64_t) &&
-                (((le64toh(*(const uint64_t *)key) & OBJ_TYPE_MASK) >>
-                OBJ_TYPE_SHIFT) == APFS_TYPE_INODE)) {
-                const j_inode_val_t *inode = v_ptr;
-                const uint8_t *raw = v_ptr;
-                size_t xfield_len = v_len > sizeof(*inode) ?
-                    v_len - sizeof(*inode) : 0;
-                size_t dump_len = MIN(xfield_len, (size_t)128);
-
-                printf("apfs_btree_search: inode 0x%llx value len %zu "
-                    "fixed len %zu xfield bytes %zu\n",
-                    (unsigned long long)(le64toh(
-                    *(const uint64_t *)key) & OBJ_ID_MASK),
-                    v_len, sizeof(*inode), xfield_len);
-                if (dump_len != 0) {
-                    printf("apfs_btree_search: inode 0x%llx xfield raw:",
-                        (unsigned long long)(le64toh(
-                        *(const uint64_t *)key) & OBJ_ID_MASK));
-                    for (size_t i = 0; i < dump_len; i++)
-                        printf(" %02x", raw[sizeof(*inode) + i]);
-                    if (dump_len < xfield_len)
-                        printf(" ...");
-                    printf("\n");
-                }
+            if (found_val_size != NULL && v_len > val_size) {
+                brelse(bp, 0);
+                return EOVERFLOW;
             }
             memset(val, 0, val_size);
-            memcpy(val, v_ptr, MIN(v_len, val_size));
+            memcpy(val, v_ptr, v_len);
+            if (found_val_size != NULL)
+                *found_val_size = v_len;
             if (found_key != NULL) {
                 if (k_len > found_key_size) {
                     brelse(bp, 0);

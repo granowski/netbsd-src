@@ -177,7 +177,7 @@ apfs_vop_lookup(void *v)
 	    le64toh(dnode->a_amp->am_sb.apfs_omap_oid),
 	    le64toh(dnode->a_amp->am_sb.apfs_root_tree_oid), key,
 	    sizeof(*key) + cnp->cn_namelen + 1, &val,
-	    APFS_DREC_VAL_BASE_SIZE, NULL, 0);
+	    APFS_DREC_VAL_BASE_SIZE, NULL, 0, NULL);
 	kmem_free(key, sizeof(*key) + cnp->cn_namelen + 1);
 
 	if (error == 0) {
@@ -318,8 +318,10 @@ apfs_vop_read(void *v)
 		    le64toh(amp->am_sb.apfs_omap_oid),
 		    le64toh(amp->am_sb.apfs_root_tree_oid), &key,
 		    sizeof(key), &val, sizeof(val), &found_key,
-		    sizeof(found_key));
-		if (error) {
+		    sizeof(found_key), NULL);
+		if (error != 0 && error != ENOENT)
+			break;
+		if (error == ENOENT) {
 			/* Hole */
 			size_t n = MIN(uio->uio_resid, amp->am_block_size - (uio->uio_offset % amp->am_block_size));
 			char zero[512];
@@ -692,7 +694,7 @@ apfs_vop_bmap(void *v)
 	error = apfs_btree_search(amp,
 	    le64toh(amp->am_sb.apfs_omap_oid),
 	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key),
-	    &val, sizeof(val), &found_key, sizeof(found_key));
+	    &val, sizeof(val), &found_key, sizeof(found_key), NULL);
 	if (error) {
 		*ap->a_bnp = -1; /* Hole */
 		return 0;

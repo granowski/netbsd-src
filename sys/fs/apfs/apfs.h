@@ -337,6 +337,27 @@ typedef struct j_inode_val {
     uint8_t xfields[0];
 } __attribute__((packed)) j_inode_val_t;
 
+#define APFS_XFIELD_TYPE_MASK    0x00ff
+#define APFS_XFIELD_TYPE_DSTREAM 0x0008
+
+typedef struct j_xfield_header {
+    uint16_t num_xfields;
+    uint16_t used_data;
+} __attribute__((packed)) j_xfield_header_t;
+
+typedef struct j_xfield {
+    uint16_t type;
+    uint16_t size;
+} __attribute__((packed)) j_xfield_t;
+
+typedef struct j_dstream {
+    uint64_t size;
+    uint64_t alloced_size;
+    uint64_t default_crypto_id;
+    uint64_t total_bytes_written;
+    uint64_t total_bytes_read;
+} __attribute__((packed)) j_dstream_t;
+
 /* Directory Entry Record Types */
 #define DREC_TYPE_MASK      0x000f
 #define DREC_TYPE_SHIFT     0
@@ -446,7 +467,7 @@ VFS_PROTOS(apfs);
 /* B-Tree Helpers */
 typedef int (*apfs_btree_iter_cb)(void *, const void *, size_t, const void *, size_t);
 int apfs_btree_search(struct apfsmount *, oid_t, oid_t, void *, size_t,
-    void *, size_t, void *, size_t);
+    void *, size_t, void *, size_t, size_t *);
 int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_btree_iter_cb, void *);
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
