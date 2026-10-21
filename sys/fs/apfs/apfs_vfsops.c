@@ -610,8 +610,11 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 	    le64toh(amp->am_sb.apfs_omap_oid),
 	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key), &val,
 	    sizeof(val), NULL, 0);
-	if (error)
+	if (error) {
+		printf("apfs_loadvnode: inode 0x%llx lookup failed: error %d\n",
+		    (unsigned long long)ino, error);
 		return error;
+	}
 
 	apnode = kmem_zalloc(sizeof(*apnode), KM_SLEEP);
 	apnode->a_amp = amp;
