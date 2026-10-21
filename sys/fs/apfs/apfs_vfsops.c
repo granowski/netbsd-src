@@ -320,6 +320,10 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	printf("apfs_mount: selected checkpoint XID 0x%llx, OMap OID 0x%llx\n",
 	    (unsigned long long)amp->am_checkpoint_xid,
 	    (unsigned long long)le64toh(amp->am_nx.nx_omap_oid));
+	error = apfs_validate_spaceman(amp);
+	if (error != 0)
+		printf("apfs_mount: Space Manager validation unavailable or "
+		    "failed: error %d\n", error);
 
 	/* 5. Find Volume Superblock */
 	error = ENOENT;

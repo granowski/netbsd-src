@@ -470,6 +470,295 @@ apfs_checkpoint_lookup(struct apfsmount *amp, oid_t oid, oid_t fs_oid,
 	return ENOENT;
 }
 
+static bool
+apfs_spaceman_paddr_valid(struct apfsmount *amp, uint64_t paddr)
+{
+	uint64_t block_count = le64toh(amp->am_nx.nx_block_count);
+
+	return paddr < block_count && paddr <= INT64_MAX;
+}
+
+int
+apfs_validate_spaceman(struct apfsmount *amp)
+{
+	struct buf *smbp, *cibp;
+	spaceman_phys_t *sm;
+	spaceman_device_t *dev;
+	uint64_t block_count, chunk_count, expected_cib_count;
+	uint64_t total_free = 0;
+	uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
+	uint32_t struct_size;
+	apfs_paddr_t spaceman_paddr;
+	int error;
+
+	if (le64toh(amp->am_nx.nx_spaceman_oid) == 0)
+		return EINVAL;
+	error = apfs_checkpoint_lookup(amp,
+	    le64toh(amp->am_nx.nx_spaceman_oid), 0, &spaceman_paddr);
+	if (error != 0) {
+		printf("apfs_spaceman: checkpoint lookup for OID 0x%llx "
+		    "failed: error %d\n",
+		    (unsigned long long)le64toh(amp->am_nx.nx_spaceman_oid),
+		    error);
+		return error;
+	}
+	if (!apfs_spaceman_paddr_valid(amp, spaceman_paddr)) {
+		printf("apfs_spaceman: OID 0x%llx maps outside the container "
+		    "(block %lld)\n",
+		    (unsigned long long)le64toh(amp->am_nx.nx_spaceman_oid),
+		    (long long)spaceman_paddr);
+		return EINVAL;
+	}
+	error = apfs_bread(amp, spaceman_paddr, &smbp);
+	if (error != 0) {
+		printf("apfs_spaceman: cannot read object at block %lld: "
+		    "error %d\n", (long long)spaceman_paddr, error);
+		return error;
+	}
+
+	sm = (spaceman_phys_t *)smbp->b_data;
+	if (!apfs_checksum_valid(amp, sm) ||
+	    le64toh(sm->o.o_oid) !=
+	    le64toh(amp->am_nx.nx_spaceman_oid) ||
+	    le64toh(sm->o.o_xid) > amp->am_checkpoint_xid ||
+	    (le32toh(sm->o.o_type) & OBJECT_TYPE_MASK) != OBJ_SPACEMAN) {
+		printf("apfs_spaceman: invalid object header at block %lld "
+		    "(oid 0x%llx xid 0x%llx type 0x%x)\n",
+		    (long long)spaceman_paddr,
+		    (unsigned long long)le64toh(sm->o.o_oid),
+		    (unsigned long long)le64toh(sm->o.o_xid),
+		    le32toh(sm->o.o_type));
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+
+	blocks_per_chunk = le32toh(sm->sm_blocks_per_chunk);
+	chunks_per_cib = le32toh(sm->sm_chunks_per_cib);
+	struct_size = le32toh(sm->sm_struct_size);
+	dev = &sm->sm_dev[0];
+	block_count = le64toh(dev->sm_block_count);
+	chunk_count = le64toh(dev->sm_chunk_count);
+	cib_count = le32toh(dev->sm_cib_count);
+	addr_offset = le32toh(dev->sm_addr_offset);
+
+	if (le32toh(sm->sm_block_size) != amp->am_block_size ||
+	    blocks_per_chunk == 0 || chunks_per_cib == 0 ||
+	    struct_size < sizeof(*sm) || struct_size > amp->am_block_size ||
+	    block_count != le64toh(amp->am_nx.nx_block_count) ||
+	    chunk_count == 0 || cib_count == 0) {
+		printf("apfs_spaceman: invalid geometry (block size %u/%u, "
+		    "blocks %llu/%llu, chunks %llu, blocks/chunk %u, "
+		    "chunks/CIB %u, CIBs %u, structure size %u)\n",
+		    le32toh(sm->sm_block_size), amp->am_block_size,
+		    (unsigned long long)block_count,
+		    (unsigned long long)le64toh(amp->am_nx.nx_block_count),
+		    (unsigned long long)chunk_count, blocks_per_chunk,
+		    chunks_per_cib, cib_count, struct_size);
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+	if (le32toh(dev->sm_cab_count) != 0 ||
+	    le64toh(sm->sm_dev[1].sm_block_count) != 0 ||
+	    le64toh(sm->sm_dev[1].sm_chunk_count) != 0 ||
+	    le32toh(sm->sm_dev[1].sm_cib_count) != 0 ||
+	    le32toh(sm->sm_dev[1].sm_cab_count) != 0) {
+		printf("apfs_spaceman: CAB or secondary-device layout is not "
+		    "supported by this validator\n");
+		brelse(smbp, 0);
+		return EOPNOTSUPP;
+	}
+	if (blocks_per_chunk > amp->am_block_size * 8U ||
+	    chunks_per_cib >
+	    (amp->am_block_size - sizeof(chunk_info_block_phys_t)) /
+	    sizeof(chunk_info_phys_t) ||
+	    addr_offset < sizeof(*sm) || addr_offset > struct_size ||
+	    cib_count > (struct_size - addr_offset) / sizeof(uint64_t)) {
+		printf("apfs_spaceman: invalid bitmap/CIB layout "
+		    "(blocks/chunk %u, chunks/CIB %u, address offset %u, "
+		    "CIB count %u, structure size %u)\n",
+		    blocks_per_chunk, chunks_per_cib, addr_offset, cib_count,
+		    struct_size);
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+	expected_cib_count = chunk_count / chunks_per_cib +
+	    (chunk_count % chunks_per_cib != 0);
+	if (chunk_count != block_count / blocks_per_chunk +
+	    (block_count % blocks_per_chunk != 0) ||
+	    expected_cib_count != cib_count) {
+		printf("apfs_spaceman: chunk geometry mismatch "
+		    "(expected chunks %llu, CIBs %llu, found chunks %llu, "
+		    "CIBs %u)\n",
+		    (unsigned long long)(block_count / blocks_per_chunk +
+		    (block_count % blocks_per_chunk != 0)),
+		    (unsigned long long)expected_cib_count,
+		    (unsigned long long)chunk_count, cib_count);
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+
+	printf("apfs_spaceman: oid 0x%llx block size %u blocks %llu "
+	    "chunks %llu blocks/chunk %u CIBs %u chunks/CIB %u\n",
+	    (unsigned long long)le64toh(amp->am_nx.nx_spaceman_oid),
+	    le32toh(sm->sm_block_size), (unsigned long long)block_count,
+	    (unsigned long long)chunk_count, blocks_per_chunk, cib_count,
+	    chunks_per_cib);
+
+	for (uint32_t i = 0; i < cib_count; i++) {
+		uint64_t cib_paddr_le;
+		uint64_t cib_paddr;
+		uint64_t first_chunk = (uint64_t)i * chunks_per_cib;
+		uint64_t remaining_chunks = chunk_count - first_chunk;
+		uint32_t expected_chunks = (uint32_t)MIN(
+		    remaining_chunks, chunks_per_cib);
+		chunk_info_block_phys_t *cib;
+
+		memcpy(&cib_paddr_le, (uint8_t *)sm + addr_offset +
+		    (size_t)i * sizeof(cib_paddr_le), sizeof(cib_paddr_le));
+		cib_paddr = le64toh(cib_paddr_le);
+		if (!apfs_spaceman_paddr_valid(amp, cib_paddr)) {
+			printf("apfs_spaceman: CIB %u has invalid block address "
+			    "%llu\n", i, (unsigned long long)cib_paddr);
+			brelse(smbp, 0);
+			return EINVAL;
+		}
+		error = apfs_bread(amp, (apfs_paddr_t)cib_paddr, &cibp);
+		if (error != 0) {
+			printf("apfs_spaceman: cannot read CIB %u at block %llu: "
+			    "error %d\n", i, (unsigned long long)cib_paddr,
+			    error);
+			brelse(smbp, 0);
+			return error;
+		}
+		cib = (chunk_info_block_phys_t *)cibp->b_data;
+		if (!apfs_checksum_valid(amp, cib) ||
+		    le64toh(cib->cib_o.o_oid) != cib_paddr ||
+		    le64toh(cib->cib_o.o_xid) > amp->am_checkpoint_xid ||
+		    (le32toh(cib->cib_o.o_type) & OBJECT_TYPE_MASK) !=
+		    OBJ_SPACEMAN_CIB ||
+		    le32toh(cib->cib_index) != i ||
+		    le32toh(cib->cib_chunk_info_count) != expected_chunks) {
+			printf("apfs_spaceman: invalid CIB %u at block %llu "
+			    "(oid 0x%llx xid 0x%llx type 0x%x index %u "
+			    "chunks %u, expected %u)\n",
+			    i, (unsigned long long)cib_paddr,
+			    (unsigned long long)le64toh(cib->cib_o.o_oid),
+			    (unsigned long long)le64toh(cib->cib_o.o_xid),
+			    le32toh(cib->cib_o.o_type),
+			    le32toh(cib->cib_index),
+			    le32toh(cib->cib_chunk_info_count),
+			    expected_chunks);
+			brelse(cibp, 0);
+			brelse(smbp, 0);
+			return EINVAL;
+		}
+
+		for (uint32_t j = 0; j < expected_chunks; j++) {
+			chunk_info_phys_t ci;
+			uint64_t chunk_index = first_chunk + j;
+			uint64_t chunk_start = chunk_index * blocks_per_chunk;
+			uint64_t blocks_remaining = block_count - chunk_start;
+			uint32_t expected_blocks = (uint32_t)MIN(
+			    blocks_remaining, blocks_per_chunk);
+			uint64_t bitmap_paddr;
+			uint32_t free_blocks = 0;
+			struct buf *bitmap_bp;
+
+			memcpy(&ci, &cib->cib_chunk_info[j], sizeof(ci));
+			bitmap_paddr = le64toh((uint64_t)ci.ci_bitmap_addr);
+			if (le64toh(ci.ci_xid) > amp->am_checkpoint_xid ||
+			    le64toh(ci.ci_addr) != chunk_start ||
+			    le32toh(ci.ci_block_count) != expected_blocks ||
+			    le32toh(ci.ci_free_count) > expected_blocks) {
+				printf("apfs_spaceman: invalid chunk %llu "
+				    "(xid 0x%llx address %llu/%llu blocks %u/%u "
+				    "free %u)\n",
+				    (unsigned long long)chunk_index,
+				    (unsigned long long)le64toh(ci.ci_xid),
+				    (unsigned long long)le64toh(ci.ci_addr),
+				    (unsigned long long)chunk_start,
+				    le32toh(ci.ci_block_count), expected_blocks,
+				    le32toh(ci.ci_free_count));
+				brelse(cibp, 0);
+				brelse(smbp, 0);
+				return EINVAL;
+			}
+			if (bitmap_paddr == 0) {
+				if (le32toh(ci.ci_free_count) != expected_blocks) {
+					printf("apfs_spaceman: chunk %llu has no "
+					    "bitmap but reports %u/%u free blocks\n",
+					    (unsigned long long)chunk_index,
+					    le32toh(ci.ci_free_count),
+					    expected_blocks);
+					brelse(cibp, 0);
+					brelse(smbp, 0);
+					return EINVAL;
+				}
+				free_blocks = expected_blocks;
+			} else {
+				if (!apfs_spaceman_paddr_valid(amp,
+				    bitmap_paddr) ||
+				    bitmap_paddr == cib_paddr) {
+					printf("apfs_spaceman: chunk %llu has invalid "
+					    "bitmap block %llu\n",
+					    (unsigned long long)chunk_index,
+					    (unsigned long long)bitmap_paddr);
+					brelse(cibp, 0);
+					brelse(smbp, 0);
+					return EINVAL;
+				}
+				error = apfs_bread(amp,
+				    (apfs_paddr_t)bitmap_paddr, &bitmap_bp);
+				if (error != 0) {
+					printf("apfs_spaceman: cannot read bitmap for "
+					    "chunk %llu at block %llu: error %d\n",
+					    (unsigned long long)chunk_index,
+					    (unsigned long long)bitmap_paddr,
+					    error);
+					brelse(cibp, 0);
+					brelse(smbp, 0);
+					return error;
+				}
+				const uint8_t *bitmap =
+				    (const uint8_t *)bitmap_bp->b_data;
+				for (uint32_t bit = 0; bit < expected_blocks; bit++) {
+					if ((bitmap[bit >> 3] &
+					    (1U << (bit & 7))) == 0)
+						free_blocks++;
+				}
+				brelse(bitmap_bp, 0);
+				if (free_blocks != le32toh(ci.ci_free_count)) {
+					printf("apfs_spaceman: chunk %llu bitmap "
+					    "free count %u disagrees with CIB %u\n",
+					    (unsigned long long)chunk_index,
+					    free_blocks,
+					    le32toh(ci.ci_free_count));
+					brelse(cibp, 0);
+					brelse(smbp, 0);
+					return EINVAL;
+				}
+			}
+			total_free += free_blocks;
+		}
+		brelse(cibp, 0);
+	}
+
+	if (total_free != le64toh(dev->sm_free_count)) {
+		printf("apfs_spaceman: chunk free total %llu disagrees with "
+		    "device free count %llu\n",
+		    (unsigned long long)total_free,
+		    (unsigned long long)le64toh(dev->sm_free_count));
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+
+	printf("apfs_spaceman: validated %llu free blocks across %llu chunks\n",
+	    (unsigned long long)total_free,
+	    (unsigned long long)chunk_count);
+	brelse(smbp, 0);
+	return 0;
+}
+
 /* OMap resolution: virtual OID -> physical block address */
 int
 apfs_omap_lookup(struct apfsmount *amp, oid_t omap_oid, oid_t oid, xid_t xid, apfs_paddr_t *paddrp)

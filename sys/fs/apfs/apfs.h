@@ -44,6 +44,9 @@ typedef struct obj_phys {
 #define OBJ_BTREE                   0x00000002
 #define OBJ_BTREE_NODE              0x00000003
 #define OBJ_SPACEMAN                0x00000005
+#define OBJ_SPACEMAN_CAB            0x00000006
+#define OBJ_SPACEMAN_CIB            0x00000007
+#define OBJ_SPACEMAN_BITMAP         0x00000008
 #define OBJ_OMAP                    0x0000000b
 #define OBJ_CHECKPOINT_MAP          0x0000000c
 #define OBJ_FS                      0x0000000d
@@ -243,25 +246,69 @@ typedef struct checkpoint_map_phys {
 } checkpoint_map_phys_t;
 
 /* Space Manager */
+#define APFS_SM_DEVICE_COUNT 2
+
+typedef struct spaceman_device {
+    uint64_t sm_block_count;
+    uint64_t sm_chunk_count;
+    uint32_t sm_cib_count;
+    uint32_t sm_cab_count;
+    uint64_t sm_free_count;
+    uint32_t sm_addr_offset;
+    uint32_t sm_reserved;
+    uint64_t sm_reserved2;
+} __attribute__((packed)) spaceman_device_t;
+
+typedef struct spaceman_free_queue {
+    uint64_t sfq_count;
+    oid_t    sfq_tree_oid;
+    xid_t    sfq_oldest_xid;
+    uint16_t sfq_tree_node_limit;
+    uint16_t sfq_pad16;
+    uint32_t sfq_pad32;
+    uint64_t sfq_reserved;
+} __attribute__((packed)) spaceman_free_queue_t;
+
 typedef struct spaceman_phys {
-    obj_phys_t sm_o;
-    uint32_t   sm_block_size;
-    uint32_t   sm_pad;
-    uint64_t   sm_block_count;
-    uint32_t   sm_chunk_count;
-    uint32_t   sm_cib_count;
-    uint32_t   sm_cab_count;
-    uint32_t   sm_free_count;
-    oid_t      sm_idx_btree_oid;
-    oid_t      sm_free_queue_oid;
-} spaceman_phys_t;
+    obj_phys_t o;
+    uint32_t sm_block_size;
+    uint32_t sm_blocks_per_chunk;
+    uint32_t sm_chunks_per_cib;
+    uint32_t sm_cibs_per_cab;
+    spaceman_device_t sm_dev[APFS_SM_DEVICE_COUNT];
+    uint32_t sm_flags;
+    uint32_t sm_ip_bm_tx_multiplier;
+    uint64_t sm_ip_block_count;
+    uint32_t sm_ip_bm_size_in_blocks;
+    uint32_t sm_ip_bm_block_count;
+    apfs_paddr_t sm_ip_bm_base;
+    apfs_paddr_t sm_ip_base;
+    uint64_t sm_fs_reserve_block_count;
+    uint64_t sm_fs_reserve_alloc_count;
+    spaceman_free_queue_t sm_fq[3];
+    uint16_t sm_ip_bm_free_head;
+    uint16_t sm_ip_bm_free_tail;
+    uint32_t sm_ip_bm_xid_offset;
+    uint32_t sm_ip_bitmap_offset;
+    uint32_t sm_ip_bm_free_next_offset;
+    uint32_t sm_version;
+    uint32_t sm_struct_size;
+} __attribute__((packed)) spaceman_phys_t;
 
 typedef struct chunk_info_phys {
+    uint64_t ci_xid;
     uint64_t ci_addr;
-    uint64_t ci_block_count;
-    uint64_t ci_free_count;
-    oid_t    ci_bitmap_oid;
-} chunk_info_phys_t;
+    uint32_t ci_block_count;
+    uint32_t ci_free_count;
+    apfs_paddr_t ci_bitmap_addr;
+} __attribute__((packed)) chunk_info_phys_t;
+
+typedef struct chunk_info_block_phys {
+    obj_phys_t cib_o;
+    uint32_t cib_index;
+    uint32_t cib_chunk_info_count;
+    chunk_info_phys_t cib_chunk_info[0];
+} __attribute__((packed)) chunk_info_block_phys_t;
 
 /* B-Tree structures */
 typedef struct btree_node_phys {
@@ -480,6 +527,7 @@ int apfs_checkpoint_lookup(struct apfsmount *, oid_t, oid_t,
 /* Space Manager Helpers */
 int apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
 int apfs_free_block(struct apfsmount *, apfs_paddr_t);
+int apfs_validate_spaceman(struct apfsmount *);
 
 /* OMap Helpers */
 int apfs_omap_lookup(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t *);
