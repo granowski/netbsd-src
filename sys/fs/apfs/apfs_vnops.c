@@ -537,6 +537,7 @@ apfs_vop_reclaim(void *v)
 	struct vnode *vp = ap->a_vp;
 	struct apfsnode *apnode = vp->v_data;
 
+	VOP_UNLOCK(vp);
 	if (apnode) {
 		genfs_node_destroy(vp);
 		kmem_free(apnode, sizeof(*apnode));
