@@ -503,7 +503,8 @@ int
 apfs_vop_inactive(void *v)
 {
 	struct vop_inactive_v2_args *ap = v;
-	VOP_UNLOCK(ap->a_vp);
+
+	*ap->a_recycle = false;
 	return 0;
 }
 
