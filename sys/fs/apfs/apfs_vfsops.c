@@ -21,6 +21,9 @@
 
 #include <fs/apfs/apfs.h>
 
+static int apfs_loadvnode(struct mount *, struct vnode *, const void *,
+    size_t, const void **);
+
 MODULE(MODULE_CLASS_VFS, apfs, NULL);
 
 struct vfsops apfs_vfsops = {
@@ -36,6 +39,7 @@ struct vfsops apfs_vfsops = {
 	.vfs_vget = apfs_vget,
 	.vfs_fhtovp = (void *)eopnotsupp,
 	.vfs_vptofh = (void *)eopnotsupp,
+	.vfs_loadvnode = apfs_loadvnode,
 	.vfs_init = apfs_init,
 	.vfs_reinit = apfs_reinit,
 	.vfs_done = apfs_done,
@@ -572,41 +576,47 @@ static const struct genfs_ops apfs_genfsops = {
 int
 apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 {
+	int error;
+
+	error = vcache_get(mp, &ino, sizeof(ino), vpp);
+	if (error)
+		return error;
+	error = vn_lock(*vpp, lktype | LK_RETRY);
+	if (error) {
+		vrele(*vpp);
+		*vpp = NULL;
+	}
+	return error;
+}
+
+static int
+apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
+    size_t key_len, const void **new_key)
+{
 	struct apfsmount *amp = mp->mnt_data;
 	struct apfsnode *apnode;
-	struct vnode *vp;
+	ino_t ino;
 	j_key_t key;
 	j_inode_val_t val;
 	int error;
 
-	/* 1. Check vnode cache */
-	error = vcache_get(mp, &ino, sizeof(ino), &vp);
-	if (error)
-		return error;
+	if (key_len != sizeof(ino))
+		return EINVAL;
+	memcpy(&ino, key_data, sizeof(ino));
 
-	vn_lock(vp, lktype | LK_RETRY);
-	if (vp->v_data != NULL) {
-		*vpp = vp;
-		return 0;
-	}
-
-	/* 2. Load inode from Root Tree */
 	key.obj_id_and_type = htole64(((uint64_t)ino << 4) |
 	    APFS_TYPE_INODE);
 	error = apfs_btree_search(amp,
 	    le64toh(amp->am_sb.apfs_omap_oid),
 	    le64toh(amp->am_sb.apfs_root_tree_oid), &key, sizeof(key), &val,
 	    sizeof(val), NULL, 0);
-	if (error) {
-		vgone(vp);
-		vput(vp);
+	if (error)
 		return error;
-	}
 
-	/* 3. Initialize apfsnode */
 	apnode = kmem_zalloc(sizeof(*apnode), KM_SLEEP);
 	apnode->a_amp = amp;
 	apnode->a_vnode = vp;
+	apnode->a_vcache_key = ino;
 	apnode->a_oid = ino;
 	memcpy(&apnode->a_ino, &val, sizeof(val));
 	apnode->a_ino.parent_id = le64toh(apnode->a_ino.parent_id);
@@ -631,7 +641,7 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	vp->v_tag = VT_NON; /* TODO: Add VT_APFS to NetBSD */
 	vp->v_op = apfs_vnodeop_p;
 	vp->v_data = apnode;
-	
+
 	switch (apnode->a_ino.mode & S_IFMT) {
 	case S_IFDIR: vp->v_type = VDIR; break;
 	case S_IFREG: vp->v_type = VREG; break;
@@ -646,7 +656,7 @@ apfs_vget(struct mount *mp, ino_t ino, int lktype, struct vnode **vpp)
 	genfs_node_init(vp, &apfs_genfsops);
 	uvm_vnp_setsize(vp, apnode->a_ino.uncompressed_size);
 
-	*vpp = vp;
+	*new_key = &apnode->a_vcache_key;
 	return 0;
 }
 

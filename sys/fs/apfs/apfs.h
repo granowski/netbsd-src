@@ -424,6 +424,7 @@ struct apfsnode {
     struct genfs_node a_gnode;
     struct vnode     *a_vnode;
     struct apfsmount *a_amp;
+    ino_t             a_vcache_key;
     oid_t             a_oid;
     j_inode_val_t     a_ino;
     bool              a_dirty;
