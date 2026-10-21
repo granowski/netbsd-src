@@ -63,7 +63,7 @@ apfs_vop_lookup(void *v)
 	j_drec_val_t val;
 	int error;
 
-	printf("apfs_lookup: dir 0x%llx name '%.*s' len %u\n",
+	printf("apfs_lookup: dir 0x%llx name '%.*s' len %zu\n",
 	    (unsigned long long)dnode->a_oid, (int)cnp->cn_namelen,
 	    cnp->cn_nameptr, cnp->cn_namelen);
 	if (cnp->cn_nameptr[0] == '.') {
