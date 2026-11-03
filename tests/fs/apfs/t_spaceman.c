@@ -240,6 +240,188 @@ typedef struct checkpoint_map_phys {
     checkpoint_mapping_t cpm_map[0];
 } checkpoint_map_phys_t;
 
+#define APFS_BTREE_MAX_DEPTH 16
+#define BTNODE_ROOT           0x0001
+#define BTNODE_LEAF           0x0002
+#define BTNODE_FIXED_KV_SIZE  0x0004
+#define BTNODE_HASHED         0x0008
+#define BTNODE_NOHEADER       0x0020
+
+#define BTREE_PHYSICAL        0x00000001
+#define BTREE_EPHEMERAL       0x00000002
+#define BTREE_HASHED          0x00000008
+
+#define APFS_TYPE_ANY         0
+#define APFS_TYPE_SNAP_METADATA 1
+#define APFS_TYPE_EXTENT      2
+#define APFS_TYPE_INODE       3
+#define APFS_TYPE_XATTR       4
+#define APFS_TYPE_SIBLING     5
+#define APFS_TYPE_DIR_REC     6
+#define APFS_TYPE_DIR_STATS   7
+
+#define OBJ_ID_MASK           0x0ffffffffffffffULL
+#define OBJ_TYPE_SHIFT        60
+#define OBJ_TYPE_MASK         0xf000000000000000ULL
+
+#define DREC_HASH_SHIFT       10
+#define DREC_NLEN_MASK        0x03ff
+#define J_EXT_LEN_MASK        0x00ffffffffffffffULL
+
+typedef struct btree_node_phys {
+    obj_phys_t btn_o;
+    uint16_t   btn_flags;
+    uint16_t   btn_level;
+    uint32_t   btn_nkeys;
+    uint16_t   btn_table_space_off;
+    uint16_t   btn_table_space_len;
+    uint16_t   btn_free_space_off;
+    uint16_t   btn_free_space_len;
+    uint16_t   btn_key_free_list_len;
+    uint16_t   btn_val_free_list_len;
+    uint8_t    btn_data[0];
+} __attribute__((packed)) btree_node_phys_t;
+
+typedef struct btree_info {
+    uint32_t bt_flags;
+    uint32_t bt_node_size;
+    uint32_t bt_key_size;
+    uint32_t bt_val_size;
+    uint32_t bt_longest_key;
+    uint32_t bt_longest_val;
+    uint64_t bt_key_count;
+    uint64_t bt_node_count;
+} __attribute__((packed)) btree_info_t;
+
+typedef struct btree_toc_entry {
+    uint16_t key_off;
+    uint16_t key_len;
+    uint16_t val_off;
+    uint16_t val_len;
+} __attribute__((packed)) btree_toc_entry_t;
+
+typedef struct btree_toc_fixed_entry {
+    uint16_t key_off;
+    uint16_t val_off;
+} __attribute__((packed)) btree_toc_fixed_entry_t;
+
+typedef struct apfs_btree_path_entry {
+    apfs_paddr_t    pe_paddr;
+    uint32_t        pe_idx;
+    uint32_t        pe_flags;
+} apfs_btree_path_entry_t;
+
+typedef struct apfs_btree_path {
+    uint32_t                bp_depth;
+    apfs_btree_path_entry_t bp_entries[APFS_BTREE_MAX_DEPTH];
+} apfs_btree_path_t;
+
+typedef struct j_key {
+    uint64_t obj_id_and_type;
+} __attribute__((packed)) j_key_t;
+
+typedef struct j_inode_val {
+    uint64_t parent_id;
+    uint64_t private_id;
+    uint64_t create_time;
+    uint64_t mod_time;
+    uint64_t change_time;
+    uint64_t access_time;
+    uint64_t internal_flags;
+    uint32_t nchildren_or_nlink;
+    uint32_t default_crypto_id;
+    uint32_t bsd_flags;
+    uint32_t owner;
+    uint32_t group;
+    uint16_t mode;
+    uint16_t pad1;
+    uint64_t uncompressed_size;
+} __attribute__((packed)) j_inode_val_t;
+
+typedef struct j_drec_hashed_key {
+    j_key_t  hdr;
+    uint32_t name_len_and_hash;
+    char     name[0];
+} __attribute__((packed)) j_drec_hashed_key_t;
+
+typedef struct j_drec_val {
+    uint64_t file_id;
+    uint64_t date_added;
+    uint16_t flags;
+} __attribute__((packed)) j_drec_val_t;
+
+typedef struct j_extent_key {
+    j_key_t  hdr;
+    uint64_t logical_addr;
+} __attribute__((packed)) j_extent_key_t;
+
+typedef struct j_phys_ext_val {
+    uint64_t len_and_flags;
+    uint64_t phys_block_num;
+    uint64_t crypto_id;
+} __attribute__((packed)) j_phys_ext_val_t;
+
+typedef struct apfs_crypto_state {
+    uint16_t major_version;
+    uint16_t minor_version;
+    uint32_t cpflags;
+    uint32_t persistent_class;
+    uint32_t key_os_version;
+    uint16_t key_revision;
+    uint16_t unused;
+} apfs_crypto_state_t;
+
+typedef struct apfs_superblock {
+    obj_phys_t apfs_o;
+    uint32_t   apfs_magic;
+    uint32_t   apfs_fs_index;
+    uint64_t   apfs_features;
+    uint64_t   apfs_readonly_compatible_features;
+    uint64_t   apfs_incompatible_features;
+    uint64_t   apfs_unmount_time;
+    uint64_t   apfs_fs_reserve_block_count;
+    uint64_t   apfs_fs_quota_block_count;
+    uint64_t   apfs_fs_alloc_count;
+    apfs_crypto_state_t apfs_meta_crypto;
+    uint32_t   apfs_root_tree_type;
+    uint32_t   apfs_extentref_tree_type;
+    uint32_t   apfs_snap_meta_tree_type;
+    oid_t      apfs_omap_oid;
+    oid_t      apfs_root_tree_oid;
+    oid_t      apfs_extentref_tree_oid;
+    oid_t      apfs_snap_meta_tree_oid;
+    xid_t      apfs_revert_to_xid;
+    oid_t      apfs_revert_to_sblock_oid;
+    uint64_t   apfs_next_obj_id;
+    uint64_t   apfs_num_files;
+    uint64_t   apfs_num_directories;
+    uint64_t   apfs_num_symlinks;
+    uint64_t   apfs_num_other_fsobjects;
+    uint64_t   apfs_num_snapshots;
+    uint64_t   apfs_total_blocks_alloced;
+    uint64_t   apfs_total_blocks_freed;
+    apfs_uuid_t apfs_vol_uuid;
+    uint64_t   apfs_last_mod_time;
+    uint64_t   apfs_fs_flags;
+    uint8_t    apfs_formatted_by[32 + 8 + 8];
+    uint8_t    apfs_modified_by[APFS_MAX_HIST * (32 + 8 + 8)];
+    uint8_t    apfs_volname[APFS_VOLNAME_LEN];
+    uint32_t   apfs_next_doc_id;
+    uint16_t   apfs_role;
+    uint16_t   apfs_reserved;
+    xid_t      apfs_root_to_xid;
+    oid_t      apfs_er_state_oid;
+    uint64_t   apfs_cloneinfo_id_epoch;
+    uint64_t   apfs_cloneinfo_xid;
+    oid_t      apfs_snap_meta_ext_oid;
+    apfs_uuid_t apfs_volume_group_id;
+    oid_t      apfs_integrity_meta_oid;
+    oid_t      apfs_fext_tree_oid;
+    uint32_t   apfs_fext_tree_type;
+    uint32_t   apfs_reserved_type;
+    oid_t      apfs_reserved_oid;
+} apfs_superblock_t;
+
 typedef pthread_mutex_t kmutex_t;
 #define IPL_NONE 0
 #define MUTEX_DEFAULT 0
@@ -1310,6 +1492,270 @@ apfs_tx_abort(apfs_tx_t *tx)
     tx->tx_state = APFS_TX_STATE_ABORTED;
 }
 
+#define APFS_TX_UPDATE_MAX_CHUNKS 64
+#define APFS_TX_UPDATE_MAX_CIBS   16
+
+int
+apfs_spaceman_tx_update(apfs_tx_t *tx)
+{
+    struct apfsmount *amp;
+    struct buf *smbp = NULL, *cibbp = NULL, *bmbp = NULL, *bp = NULL;
+    spaceman_phys_t *sm, *new_sm = NULL;
+    apfs_paddr_t sm_paddr, new_sm_paddr;
+    uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
+    int error = 0;
+
+    if (tx == NULL || tx->tx_amp == NULL ||
+        (tx->tx_state != APFS_TX_STATE_ACTIVE && tx->tx_state != APFS_TX_STATE_COMMITTING))
+        return EINVAL;
+
+    amp = tx->tx_amp;
+    if (LIST_EMPTY(&tx->tx_resv.rt_entries))
+        return 0;
+
+    if (le64toh(amp->am_nx.nx_spaceman_oid) == 0)
+        return EINVAL;
+
+    error = apfs_checkpoint_lookup(amp, le64toh(amp->am_nx.nx_spaceman_oid), 0, &sm_paddr);
+    if (error != 0)
+        return error;
+
+    error = apfs_bread(amp, sm_paddr, &smbp);
+    if (error != 0)
+        return error;
+
+    sm = (spaceman_phys_t *)smbp->b_data;
+    blocks_per_chunk = le32toh(sm->sm_blocks_per_chunk);
+    chunks_per_cib = le32toh(sm->sm_chunks_per_cib);
+    cib_count = le32toh(sm->sm_dev[0].sm_cib_count);
+    addr_offset = le32toh(sm->sm_dev[0].sm_addr_offset);
+
+    if (blocks_per_chunk == 0 || chunks_per_cib == 0 || cib_count == 0) {
+        brelse(smbp, 0);
+        return EINVAL;
+    }
+
+    struct chunk_mod {
+        uint64_t     cm_chunk_idx;
+        uint32_t     cm_cib_idx;
+        uint32_t     cm_chunk_in_cib;
+        apfs_paddr_t cm_old_bm;
+        apfs_paddr_t cm_new_bm;
+        uint32_t     cm_alloc_count;
+        uint8_t     *cm_bitmap;
+    } chunks[APFS_TX_UPDATE_MAX_CHUNKS];
+    uint32_t num_chunks = 0;
+
+    struct cib_mod {
+        uint32_t                 cibm_idx;
+        apfs_paddr_t             cibm_old_paddr;
+        apfs_paddr_t             cibm_new_paddr;
+        chunk_info_block_phys_t *cibm_data;
+    } cibs[APFS_TX_UPDATE_MAX_CIBS];
+    uint32_t num_cibs = 0;
+
+    memset(chunks, 0, sizeof(chunks));
+    memset(cibs, 0, sizeof(cibs));
+
+    bool new_allocs = true;
+
+    while (new_allocs) {
+        new_allocs = false;
+        apfs_resv_entry_t *re;
+
+        LIST_FOREACH(re, &tx->tx_resv.rt_entries, re_link) {
+            for (uint64_t b = 0; b < re->re_block_count; b++) {
+                uint64_t p = re->re_paddr + b;
+                uint64_t chk = p / blocks_per_chunk;
+                uint32_t cib_idx = chk / chunks_per_cib;
+                uint32_t chunk_in_cib = chk % chunks_per_cib;
+                uint32_t bit = p % blocks_per_chunk;
+
+                int c_idx = -1;
+                for (uint32_t i = 0; i < num_chunks; i++) {
+                    if (chunks[i].cm_chunk_idx == chk) {
+                        c_idx = i;
+                        break;
+                    }
+                }
+
+                if (c_idx == -1) {
+                    if (num_chunks >= APFS_TX_UPDATE_MAX_CHUNKS) {
+                        error = ENOSPC;
+                        goto out;
+                    }
+                    c_idx = num_chunks++;
+                    chunks[c_idx].cm_chunk_idx = chk;
+                    chunks[c_idx].cm_cib_idx = cib_idx;
+                    chunks[c_idx].cm_chunk_in_cib = chunk_in_cib;
+                    chunks[c_idx].cm_bitmap = (uint8_t *)calloc(1, amp->am_block_size);
+
+                    const uint64_t *cib_paddrs = (const uint64_t *)((const char *)sm + addr_offset);
+                    apfs_paddr_t old_cib_paddr = (apfs_paddr_t)le64toh(cib_paddrs[cib_idx]);
+
+                    error = apfs_bread(amp, old_cib_paddr, &cibbp);
+                    if (error != 0)
+                        goto out;
+
+                    chunk_info_block_phys_t *cib = (chunk_info_block_phys_t *)cibbp->b_data;
+                    chunks[c_idx].cm_old_bm = (apfs_paddr_t)le64toh((uint64_t)cib->cib_chunk_info[chunk_in_cib].ci_bitmap_addr);
+
+                    if (chunks[c_idx].cm_old_bm != 0) {
+                        error = apfs_bread(amp, chunks[c_idx].cm_old_bm, &bmbp);
+                        if (error != 0) {
+                            brelse(cibbp, 0);
+                            goto out;
+                        }
+                        memcpy(chunks[c_idx].cm_bitmap, bmbp->b_data, amp->am_block_size);
+                        brelse(bmbp, 0);
+                    }
+
+                    int cb_idx = -1;
+                    for (uint32_t j = 0; j < num_cibs; j++) {
+                        if (cibs[j].cibm_idx == cib_idx) {
+                            cb_idx = j;
+                            break;
+                        }
+                    }
+                    if (cb_idx == -1) {
+                        if (num_cibs >= APFS_TX_UPDATE_MAX_CIBS) {
+                            brelse(cibbp, 0);
+                            error = ENOSPC;
+                            goto out;
+                        }
+                        cb_idx = num_cibs++;
+                        cibs[cb_idx].cibm_idx = cib_idx;
+                        cibs[cb_idx].cibm_old_paddr = old_cib_paddr;
+                        cibs[cb_idx].cibm_data = (chunk_info_block_phys_t *)malloc(amp->am_block_size);
+                        memcpy(cibs[cb_idx].cibm_data, cibbp->b_data, amp->am_block_size);
+
+                        error = apfs_tx_alloc_block(tx, 1, &cibs[cb_idx].cibm_new_paddr);
+                        if (error != 0) {
+                            brelse(cibbp, 0);
+                            goto out;
+                        }
+                        new_allocs = true;
+                    }
+                    brelse(cibbp, 0);
+
+                    error = apfs_tx_alloc_block(tx, 1, &chunks[c_idx].cm_new_bm);
+                    if (error != 0)
+                        goto out;
+                    new_allocs = true;
+                }
+
+                if ((chunks[c_idx].cm_bitmap[bit >> 3] & (1U << (bit & 7))) == 0) {
+                    chunks[c_idx].cm_bitmap[bit >> 3] |= (1U << (bit & 7));
+                    chunks[c_idx].cm_alloc_count++;
+                }
+            }
+        }
+    }
+
+    error = apfs_tx_alloc_block(tx, 1, &new_sm_paddr);
+    if (error != 0)
+        goto out;
+
+    {
+        uint64_t p = new_sm_paddr;
+        uint64_t chk = p / blocks_per_chunk;
+        uint32_t bit = p % blocks_per_chunk;
+        for (uint32_t i = 0; i < num_chunks; i++) {
+            if (chunks[i].cm_chunk_idx == chk) {
+                if ((chunks[i].cm_bitmap[bit >> 3] & (1U << (bit & 7))) == 0) {
+                    chunks[i].cm_bitmap[bit >> 3] |= (1U << (bit & 7));
+                    chunks[i].cm_alloc_count++;
+                }
+                break;
+            }
+        }
+    }
+
+    /* 1. Write all modified bitmap blocks */
+    for (uint32_t i = 0; i < num_chunks; i++) {
+        error = apfs_getblk(amp, chunks[i].cm_new_bm, &bp);
+        if (error != 0)
+            goto out;
+        memcpy(bp->b_data, chunks[i].cm_bitmap, amp->am_block_size);
+        error = apfs_bwrite(amp, chunks[i].cm_new_bm, bp);
+        if (error != 0)
+            goto out;
+    }
+
+    /* 2. Write all modified CIB blocks */
+    for (uint32_t j = 0; j < num_cibs; j++) {
+        chunk_info_block_phys_t *cib = cibs[j].cibm_data;
+        apfs_obj_init(&cib->cib_o, (oid_t)cibs[j].cibm_new_paddr, tx->tx_xid,
+            OBJ_SPACEMAN_CIB | OBJ_PHYSICAL, 0);
+
+        for (uint32_t i = 0; i < num_chunks; i++) {
+            if (chunks[i].cm_cib_idx == cibs[j].cibm_idx) {
+                chunk_info_phys_t *ci = &cib->cib_chunk_info[chunks[i].cm_chunk_in_cib];
+                uint32_t old_free = le32toh(ci->ci_free_count);
+                ci->ci_xid = htole64(tx->tx_xid);
+                ci->ci_free_count = htole32(old_free >= chunks[i].cm_alloc_count ?
+                    old_free - chunks[i].cm_alloc_count : 0);
+                ci->ci_bitmap_addr = (apfs_paddr_t)htole64((uint64_t)chunks[i].cm_new_bm);
+            }
+        }
+        apfs_obj_set_cksum(amp, cib);
+
+        error = apfs_getblk(amp, cibs[j].cibm_new_paddr, &bp);
+        if (error != 0)
+            goto out;
+        memcpy(bp->b_data, cib, amp->am_block_size);
+        error = apfs_bwrite(amp, cibs[j].cibm_new_paddr, bp);
+        if (error != 0)
+            goto out;
+    }
+
+    /* 3. Write Space Manager block */
+    new_sm = (spaceman_phys_t *)malloc(amp->am_block_size);
+    memcpy(new_sm, sm, amp->am_block_size);
+    apfs_obj_init(&new_sm->o, le64toh(amp->am_nx.nx_spaceman_oid), tx->tx_xid,
+        OBJ_SPACEMAN | OBJ_EPHEMERAL, 0);
+
+    uint64_t old_sm_free = le64toh(new_sm->sm_dev[0].sm_free_count);
+    uint64_t total_allocated = tx->tx_resv.rt_count;
+    new_sm->sm_dev[0].sm_free_count = htole64(old_sm_free >= total_allocated ?
+        old_sm_free - total_allocated : 0);
+
+    uint64_t *sm_cib_paddrs = (uint64_t *)((char *)new_sm + addr_offset);
+    for (uint32_t j = 0; j < num_cibs; j++) {
+        sm_cib_paddrs[cibs[j].cibm_idx] = htole64((uint64_t)cibs[j].cibm_new_paddr);
+    }
+
+    apfs_obj_set_cksum(amp, new_sm);
+
+    error = apfs_getblk(amp, new_sm_paddr, &bp);
+    if (error != 0)
+        goto out;
+    memcpy(bp->b_data, new_sm, amp->am_block_size);
+    error = apfs_bwrite(amp, new_sm_paddr, bp);
+    if (error != 0)
+        goto out;
+
+    /* 4. Register Space Manager mapping in transaction */
+    error = apfs_tx_add_mapping(tx, OBJ_SPACEMAN | OBJ_EPHEMERAL, 0, amp->am_block_size, 0,
+        le64toh(amp->am_nx.nx_spaceman_oid), new_sm_paddr);
+
+out:
+    if (smbp != NULL)
+        brelse(smbp, 0);
+    if (new_sm != NULL)
+        free(new_sm);
+    for (uint32_t i = 0; i < num_chunks; i++) {
+        if (chunks[i].cm_bitmap != NULL)
+            free(chunks[i].cm_bitmap);
+    }
+    for (uint32_t j = 0; j < num_cibs; j++) {
+        if (cibs[j].cibm_data != NULL)
+            free(cibs[j].cibm_data);
+    }
+
+    return error;
+}
+
 int
 apfs_tx_commit(apfs_tx_t *tx)
 {
@@ -1332,6 +1778,13 @@ apfs_tx_commit(apfs_tx_t *tx)
 
     if (desc_blocks == 0 || desc_base == 0)
         return EINVAL;
+
+    /* Phase 1: Update Space Manager, CIBs, and Bitmaps if any allocations made */
+    error = apfs_spaceman_tx_update(tx);
+    if (error != 0) {
+        apfs_tx_abort(tx);
+        return error;
+    }
 
     capacity = (amp->am_block_size - sizeof(checkpoint_map_phys_t)) /
         sizeof(checkpoint_mapping_t);
@@ -1418,19 +1871,581 @@ apfs_tx_commit(apfs_tx_t *tx)
     amp->am_checkpoint_xid = tx->tx_xid;
     memcpy(&amp->am_nx, new_nx, sizeof(amp->am_nx));
 
-    /* Clean up transaction handle */
+    /* Clean up transaction handle and release from global reservation pool */
+    mutex_enter(&amp->am_resv_pool.rp_lock);
     apfs_resv_entry_t *re, *tmp;
     re = LIST_FIRST(&tx->tx_resv.rt_entries);
     while (re != NULL) {
         tmp = LIST_NEXT(re, re_link);
+        apfs_resv_entry_t *pe, *ptmp;
+        pe = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+        while (pe != NULL) {
+            ptmp = LIST_NEXT(pe, re_link);
+            if (pe->re_paddr == re->re_paddr && pe->re_block_count == re->re_block_count) {
+                LIST_REMOVE(pe, re_link);
+                if (amp->am_resv_pool.rp_total_reserved >= pe->re_block_count)
+                    amp->am_resv_pool.rp_total_reserved -= pe->re_block_count;
+                else
+                    amp->am_resv_pool.rp_total_reserved = 0;
+                free(pe);
+                break;
+            }
+            pe = ptmp;
+        }
         LIST_REMOVE(re, re_link);
-        kmem_free(re, sizeof(*re));
+        free(re);
         re = tmp;
     }
     tx->tx_resv.rt_count = 0;
+    mutex_exit(&amp->am_resv_pool.rp_lock);
     tx->tx_state = APFS_TX_STATE_COMMITTED;
 
     return 0;
+}
+
+static uint32_t
+apfs_name_hash(const char *name, size_t len)
+{
+    uint32_t hash = 0;
+    for (size_t i = 0; i < len; i++) {
+        hash = (hash * 33) + (uint8_t)name[i];
+    }
+    return hash;
+}
+
+static int
+apfs_btree_cmp(const void *k1, const void *k2, uint32_t subtype)
+{
+    const j_key_t *jk1 = k1;
+    const j_key_t *jk2 = k2;
+    uint64_t id1 = le64toh(jk1->obj_id_and_type) & OBJ_ID_MASK;
+    uint64_t id2 = le64toh(jk2->obj_id_and_type) & OBJ_ID_MASK;
+    uint64_t type1 = (le64toh(jk1->obj_id_and_type) & OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT;
+    uint64_t type2 = (le64toh(jk2->obj_id_and_type) & OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT;
+
+    if (id1 < id2) return -1;
+    if (id1 > id2) return 1;
+    if (type1 < type2) return -1;
+    if (type1 > type2) return 1;
+
+    if (subtype == APFS_TYPE_EXTENT) {
+        const j_extent_key_t *ek1 = k1;
+        const j_extent_key_t *ek2 = k2;
+        uint64_t addr1 = le64toh(ek1->logical_addr);
+        uint64_t addr2 = le64toh(ek2->logical_addr);
+        if (addr1 < addr2) return -1;
+        if (addr1 > addr2) return 1;
+    }
+    return 0;
+}
+
+static int
+apfs_btree_entry(struct apfsmount *amp, btree_node_phys_t *node,
+    const btree_info_t *info, uint32_t index, const void **keyp,
+    size_t *key_lenp, const void **valp, size_t *val_lenp)
+{
+    uint8_t *data = (uint8_t *)node + sizeof(*node);
+    uint32_t flags = le16toh(node->btn_flags);
+    uint32_t nkeys = le32toh(node->btn_nkeys);
+    uint32_t table_off = le16toh(node->btn_table_space_off);
+    uint32_t table_len = le16toh(node->btn_table_space_len);
+    uint32_t data_end = amp->am_block_size;
+    uint32_t toc_size, key_off, key_len, val_off, val_len;
+    uint32_t key_area, val_start;
+
+    if ((flags & BTNODE_ROOT) != 0)
+        data_end -= sizeof(*info);
+    if (index >= nkeys || table_off > amp->am_block_size - sizeof(*node) ||
+        table_len > amp->am_block_size - sizeof(*node) - table_off)
+        return EINVAL;
+
+    if (flags & BTNODE_FIXED_KV_SIZE) {
+        const btree_toc_fixed_entry_t *toc;
+        toc_size = sizeof(*toc);
+        if (info->bt_key_size == 0 ||
+            ((flags & BTNODE_LEAF) && info->bt_val_size == 0))
+            return EINVAL;
+        if ((uint64_t)nkeys * toc_size > table_len)
+            return EINVAL;
+        toc = (const btree_toc_fixed_entry_t *)(data + table_off);
+        key_off = le16toh(toc[index].key_off);
+        val_off = le16toh(toc[index].val_off);
+        key_len = le32toh(info->bt_key_size);
+        val_len = (flags & BTNODE_LEAF) ?
+            le32toh(info->bt_val_size) : sizeof(oid_t);
+    } else {
+        const btree_toc_entry_t *toc;
+        toc_size = sizeof(*toc);
+        if ((uint64_t)nkeys * toc_size > table_len)
+            return EINVAL;
+        toc = (const btree_toc_entry_t *)(data + table_off);
+        key_off = le16toh(toc[index].key_off);
+        key_len = le16toh(toc[index].key_len);
+        val_off = le16toh(toc[index].val_off);
+        val_len = le16toh(toc[index].val_len);
+    }
+
+    key_area = sizeof(*node) + table_off + table_len;
+    if (key_area > data_end || key_off > data_end - key_area ||
+        key_len > data_end - key_area - key_off ||
+        val_off > data_end || val_len > val_off)
+        return EINVAL;
+    val_start = data_end - val_off;
+    if (val_start < key_area + key_off + key_len)
+        return EINVAL;
+
+    *keyp = (uint8_t *)node + key_area + key_off;
+    *key_lenp = key_len;
+    *valp = (uint8_t *)node + val_start;
+    *val_lenp = val_len;
+    return 0;
+}
+
+static int
+apfs_btree_resolve_child(struct apfsmount *amp, oid_t omap_oid,
+    uint32_t tree_flags, oid_t child_oid, apfs_paddr_t *paddrp)
+{
+    if (tree_flags & BTREE_PHYSICAL) {
+        if (child_oid > INT64_MAX)
+            return EINVAL;
+        *paddrp = (apfs_paddr_t)child_oid;
+        return 0;
+    }
+    if (tree_flags & BTREE_EPHEMERAL) {
+        return apfs_checkpoint_lookup(amp, child_oid, 0, paddrp);
+    }
+    *paddrp = (apfs_paddr_t)child_oid;
+    return 0;
+}
+
+int
+apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
+    const void *key, size_t key_len, const void *val, size_t val_len)
+{
+    struct apfsmount *amp;
+    apfs_paddr_t root_paddr, curr_paddr;
+    apfs_btree_path_t path;
+    struct buf *bp;
+    btree_info_t info;
+    uint32_t tree_flags = 0;
+    int error;
+
+    if (tx == NULL || tx->tx_amp == NULL || tree_oid == NULL ||
+        key == NULL || val == NULL)
+        return EINVAL;
+
+    amp = tx->tx_amp;
+    root_paddr = (apfs_paddr_t)*tree_oid;
+
+    memset(&path, 0, sizeof(path));
+    curr_paddr = root_paddr;
+
+    /* 1. Navigate from root to leaf, recording path */
+    while (curr_paddr != 0 && path.bp_depth < APFS_BTREE_MAX_DEPTH) {
+        error = apfs_bread(amp, curr_paddr, &bp);
+        if (error != 0)
+            return error;
+
+        btree_node_phys_t *node = (btree_node_phys_t *)bp->b_data;
+        uint16_t flags = le16toh(node->btn_flags);
+        uint16_t level = le16toh(node->btn_level);
+        uint32_t nkeys = le32toh(node->btn_nkeys);
+
+        if (path.bp_depth == 0) {
+            if ((flags & BTNODE_ROOT) == 0) {
+                brelse(bp, 0);
+                return EINVAL;
+            }
+            memcpy(&info, (char *)node + amp->am_block_size - sizeof(info), sizeof(info));
+            tree_flags = le32toh(info.bt_flags);
+        }
+
+        path.bp_entries[path.bp_depth].pe_paddr = curr_paddr;
+        path.bp_entries[path.bp_depth].pe_flags = flags;
+
+        if (level == 0 || (flags & BTNODE_LEAF) != 0) {
+            uint32_t ins_idx = nkeys;
+            for (uint32_t i = 0; i < nkeys; i++) {
+                const void *k_ptr, *v_ptr;
+                size_t k_len, v_len;
+                error = apfs_btree_entry(amp, node, &info, i, &k_ptr, &k_len, &v_ptr, &v_len);
+                if (error != 0) {
+                    brelse(bp, 0);
+                    return error;
+                }
+                uint32_t subtype = (flags & BTNODE_FIXED_KV_SIZE) ? 0 : APFS_TYPE_ANY;
+                if (apfs_btree_cmp(key, k_ptr, subtype) <= 0) {
+                    ins_idx = i;
+                    break;
+                }
+            }
+            path.bp_entries[path.bp_depth].pe_idx = ins_idx;
+            path.bp_depth++;
+            brelse(bp, 0);
+            break;
+        }
+
+        uint32_t child_idx = 0;
+        for (uint32_t i = 0; i < nkeys; i++) {
+            const void *k_ptr, *v_ptr;
+            size_t k_len, v_len;
+            error = apfs_btree_entry(amp, node, &info, i, &k_ptr, &k_len, &v_ptr, &v_len);
+            if (error != 0) {
+                brelse(bp, 0);
+                return error;
+            }
+            if (apfs_btree_cmp(key, k_ptr, APFS_TYPE_ANY) >= 0)
+                child_idx = i;
+            else
+                break;
+        }
+
+        path.bp_entries[path.bp_depth].pe_idx = child_idx;
+        const void *k_ptr, *v_ptr;
+        size_t k_len, v_len;
+        error = apfs_btree_entry(amp, node, &info, child_idx, &k_ptr, &k_len, &v_ptr, &v_len);
+        if (error != 0) {
+            brelse(bp, 0);
+            return error;
+        }
+
+        oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
+        brelse(bp, 0);
+
+        error = apfs_btree_resolve_child(amp, omap_oid, tree_flags, child_oid, &curr_paddr);
+        if (error != 0)
+            return error;
+
+        path.bp_depth++;
+    }
+
+    if (path.bp_depth == 0)
+        return EINVAL;
+
+    /* 2. Insert into leaf node with Copy-on-Write */
+    uint32_t leaf_depth = path.bp_depth - 1;
+    apfs_paddr_t old_leaf_paddr = path.bp_entries[leaf_depth].pe_paddr;
+    uint32_t ins_idx = path.bp_entries[leaf_depth].pe_idx;
+
+    error = apfs_bread(amp, old_leaf_paddr, &bp);
+    if (error != 0)
+        return error;
+
+    btree_node_phys_t *old_leaf = (btree_node_phys_t *)bp->b_data;
+    uint16_t leaf_flags = le16toh(old_leaf->btn_flags);
+    uint32_t old_nkeys = le32toh(old_leaf->btn_nkeys);
+    uint32_t table_off = le16toh(old_leaf->btn_table_space_off);
+    uint32_t table_len = le16toh(old_leaf->btn_table_space_len);
+    uint32_t data_end = amp->am_block_size - ((leaf_flags & BTNODE_ROOT) ? sizeof(btree_info_t) : 0);
+    uint32_t toc_size = (leaf_flags & BTNODE_FIXED_KV_SIZE) ?
+        sizeof(btree_toc_fixed_entry_t) : sizeof(btree_toc_entry_t);
+
+    apfs_paddr_t new_leaf_paddr;
+    error = apfs_tx_alloc_block(tx, 1, &new_leaf_paddr);
+    if (error != 0) {
+        brelse(bp, 0);
+        return error;
+    }
+
+    struct buf *new_bp;
+    error = apfs_getblk(amp, new_leaf_paddr, &new_bp);
+    if (error != 0) {
+        brelse(bp, 0);
+        return error;
+    }
+
+    btree_node_phys_t *new_leaf = (btree_node_phys_t *)new_bp->b_data;
+    memset(new_leaf, 0, amp->am_block_size);
+    memcpy(new_leaf, old_leaf, sizeof(*old_leaf));
+
+    uint8_t *new_data = (uint8_t *)new_leaf + sizeof(*new_leaf);
+    uint32_t key_area_start = sizeof(*new_leaf) + table_off + table_len + toc_size;
+    uint32_t curr_key_off = 0;
+    uint32_t curr_val_off = 0;
+
+    uint32_t new_nkeys = old_nkeys + 1;
+    new_leaf->btn_nkeys = htole32(new_nkeys);
+    new_leaf->btn_table_space_len = htole16(table_len + toc_size);
+
+    for (uint32_t i = 0; i < new_nkeys; i++) {
+        const void *k_data, *v_data;
+        size_t k_sz, v_sz;
+
+        if (i == ins_idx) {
+            k_data = key;
+            k_sz = key_len;
+            v_data = val;
+            v_sz = val_len;
+        } else {
+            uint32_t src_i = (i < ins_idx) ? i : i - 1;
+            error = apfs_btree_entry(amp, old_leaf, &info, src_i,
+                &k_data, &k_sz, &v_data, &v_sz);
+            if (error != 0) {
+                brelse(bp, 0);
+                brelse(new_bp, 0);
+                return error;
+            }
+        }
+
+        memcpy((uint8_t *)new_leaf + key_area_start + curr_key_off, k_data, k_sz);
+        curr_val_off += v_sz;
+        memcpy((uint8_t *)new_leaf + data_end - curr_val_off, v_data, v_sz);
+
+        if (leaf_flags & BTNODE_FIXED_KV_SIZE) {
+            btree_toc_fixed_entry_t *toc = (btree_toc_fixed_entry_t *)(new_data + table_off);
+            toc[i].key_off = htole16(curr_key_off);
+            toc[i].val_off = htole16(curr_val_off);
+        } else {
+            btree_toc_entry_t *toc = (btree_toc_entry_t *)(new_data + table_off);
+            toc[i].key_off = htole16(curr_key_off);
+            toc[i].key_len = htole16(k_sz);
+            toc[i].val_off = htole16(curr_val_off);
+            toc[i].val_len = htole16(v_sz);
+        }
+
+        curr_key_off += k_sz;
+    }
+
+    brelse(bp, 0);
+
+    if (leaf_flags & BTNODE_ROOT) {
+        btree_info_t *new_info = (btree_info_t *)((char *)new_leaf + amp->am_block_size - sizeof(btree_info_t));
+        memcpy(new_info, &info, sizeof(info));
+        new_info->bt_key_count = htole32(le32toh(info.bt_key_count) + 1);
+    }
+
+    apfs_obj_init(&new_leaf->btn_o, (oid_t)new_leaf_paddr, tx->tx_xid,
+        OBJ_BTREE_NODE | OBJ_PHYSICAL, 0);
+    apfs_obj_set_cksum(amp, new_leaf);
+
+    error = apfs_bwrite(amp, new_leaf_paddr, new_bp);
+    if (error != 0)
+        return error;
+
+    /* 3. Propagate up the path stack if internal nodes exist */
+    apfs_paddr_t child_paddr = new_leaf_paddr;
+    for (int d = (int)leaf_depth - 1; d >= 0; d--) {
+        apfs_paddr_t old_parent_paddr = path.bp_entries[d].pe_paddr;
+        uint32_t p_child_idx = path.bp_entries[d].pe_idx;
+
+        error = apfs_bread(amp, old_parent_paddr, &bp);
+        if (error != 0)
+            return error;
+
+        btree_node_phys_t *old_parent = (btree_node_phys_t *)bp->b_data;
+        uint16_t p_flags = le16toh(old_parent->btn_flags);
+
+        apfs_paddr_t new_parent_paddr;
+        error = apfs_tx_alloc_block(tx, 1, &new_parent_paddr);
+        if (error != 0) {
+            brelse(bp, 0);
+            return error;
+        }
+
+        error = apfs_getblk(amp, new_parent_paddr, &new_bp);
+        if (error != 0) {
+            brelse(bp, 0);
+            return error;
+        }
+
+        btree_node_phys_t *new_parent = (btree_node_phys_t *)new_bp->b_data;
+        memcpy(new_parent, old_parent, amp->am_block_size);
+        brelse(bp, 0);
+
+        uint32_t p_data_end = amp->am_block_size - ((p_flags & BTNODE_ROOT) ? sizeof(btree_info_t) : 0);
+        uint8_t *p_data = (uint8_t *)new_parent + sizeof(*new_parent);
+        uint32_t p_table_off = le16toh(new_parent->btn_table_space_off);
+
+        if (p_flags & BTNODE_FIXED_KV_SIZE) {
+            btree_toc_fixed_entry_t *toc = (btree_toc_fixed_entry_t *)(p_data + p_table_off);
+            uint32_t v_off = le16toh(toc[p_child_idx].val_off);
+            oid_t *val_ptr = (oid_t *)((uint8_t *)new_parent + p_data_end - v_off);
+            *val_ptr = htole64((uint64_t)child_paddr);
+        } else {
+            btree_toc_entry_t *toc = (btree_toc_entry_t *)(p_data + p_table_off);
+            uint32_t v_off = le16toh(toc[p_child_idx].val_off);
+            oid_t *val_ptr = (oid_t *)((uint8_t *)new_parent + p_data_end - v_off);
+            *val_ptr = htole64((uint64_t)child_paddr);
+        }
+
+        if (p_flags & BTNODE_ROOT) {
+            btree_info_t *p_info = (btree_info_t *)((char *)new_parent + amp->am_block_size - sizeof(btree_info_t));
+            p_info->bt_key_count = htole32(le32toh(p_info->bt_key_count) + 1);
+        }
+
+        apfs_obj_init(&new_parent->btn_o, (oid_t)new_parent_paddr, tx->tx_xid,
+            OBJ_BTREE_NODE | OBJ_PHYSICAL, 0);
+        apfs_obj_set_cksum(amp, new_parent);
+
+        error = apfs_bwrite(amp, new_parent_paddr, new_bp);
+        if (error != 0)
+            return error;
+
+        child_paddr = new_parent_paddr;
+    }
+
+    *tree_oid = (oid_t)child_paddr;
+    return 0;
+}
+
+int
+apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
+    mode_t mode, uid_t uid, gid_t gid, oid_t *new_oidp)
+{
+    apfs_tx_t tx;
+    oid_t new_ino_oid = 0x5000;
+    uint32_t name_len = strlen(name);
+    uint32_t name_hash = apfs_name_hash(name, name_len);
+    int error;
+
+    error = apfs_tx_begin(amp, &tx);
+    if (error != 0)
+        return error;
+
+    j_key_t ino_key;
+    ino_key.obj_id_and_type = htole64((new_ino_oid & OBJ_ID_MASK) |
+        ((uint64_t)APFS_TYPE_INODE << OBJ_TYPE_SHIFT));
+
+    j_inode_val_t ino_val;
+    memset(&ino_val, 0, sizeof(ino_val));
+    ino_val.parent_id = htole64(parent_oid);
+    ino_val.private_id = htole64(new_ino_oid);
+    ino_val.nchildren_or_nlink = htole32(1);
+    ino_val.owner = htole32(uid);
+    ino_val.group = htole32(gid);
+    ino_val.mode = htole16(mode | S_IFREG);
+
+    oid_t root_tree_oid = 0;
+    /* Create a standalone btree node if tree_oid is 0 */
+    apfs_paddr_t tree_root_paddr;
+    error = apfs_tx_alloc_block(&tx, 1, &tree_root_paddr);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+    struct buf *root_bp;
+    error = apfs_getblk(amp, tree_root_paddr, &root_bp);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+    btree_node_phys_t *rnode = (btree_node_phys_t *)root_bp->b_data;
+    memset(rnode, 0, amp->am_block_size);
+    rnode->btn_flags = htole16(BTNODE_ROOT | BTNODE_LEAF);
+    rnode->btn_level = 0;
+    rnode->btn_nkeys = 0;
+    rnode->btn_table_space_off = 0;
+    rnode->btn_table_space_len = 0;
+
+    btree_info_t *rinfo = (btree_info_t *)((char *)rnode + amp->am_block_size - sizeof(btree_info_t));
+    rinfo->bt_flags = htole32(BTREE_PHYSICAL);
+    rinfo->bt_node_size = htole32(amp->am_block_size);
+    apfs_obj_init(&rnode->btn_o, (oid_t)tree_root_paddr, tx.tx_xid,
+        OBJ_BTREE_NODE | OBJ_PHYSICAL, 0);
+    apfs_obj_set_cksum(amp, rnode);
+    error = apfs_bwrite(amp, tree_root_paddr, root_bp);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+    root_tree_oid = tree_root_paddr;
+
+    error = apfs_btree_insert_record(&tx, 0, &root_tree_oid,
+        &ino_key, sizeof(ino_key), &ino_val, sizeof(ino_val));
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+
+    size_t drec_key_size = sizeof(j_drec_hashed_key_t) + name_len + 1;
+    j_drec_hashed_key_t *drec_key = calloc(1, drec_key_size);
+    drec_key->hdr.obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
+        ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
+    drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
+        (name_len & DREC_NLEN_MASK));
+    memcpy(drec_key->name, name, name_len);
+
+    j_drec_val_t drec_val;
+    memset(&drec_val, 0, sizeof(drec_val));
+    drec_val.file_id = htole64(new_ino_oid);
+    drec_val.flags = htole16(0x1);
+
+    error = apfs_btree_insert_record(&tx, 0, &root_tree_oid,
+        drec_key, drec_key_size, &drec_val, sizeof(drec_val));
+    free(drec_key);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+
+    error = apfs_tx_commit(&tx);
+    if (error != 0)
+        return error;
+
+    if (new_oidp != NULL)
+        *new_oidp = new_ino_oid;
+
+    return 0;
+}
+
+int
+apfs_write_file_extent(struct apfsmount *amp, oid_t ino_oid, uint64_t file_offset,
+    uint64_t length, apfs_paddr_t paddr)
+{
+    apfs_tx_t tx;
+    oid_t root_tree_oid;
+    j_extent_key_t ext_key;
+    j_phys_ext_val_t ext_val;
+    int error;
+
+    error = apfs_tx_begin(amp, &tx);
+    if (error != 0)
+        return error;
+
+    apfs_paddr_t tree_root_paddr;
+    error = apfs_tx_alloc_block(&tx, 1, &tree_root_paddr);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+    struct buf *root_bp;
+    error = apfs_getblk(amp, tree_root_paddr, &root_bp);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+    btree_node_phys_t *rnode = (btree_node_phys_t *)root_bp->b_data;
+    memset(rnode, 0, amp->am_block_size);
+    rnode->btn_flags = htole16(BTNODE_ROOT | BTNODE_LEAF);
+    btree_info_t *rinfo = (btree_info_t *)((char *)rnode + amp->am_block_size - sizeof(btree_info_t));
+    rinfo->bt_flags = htole32(BTREE_PHYSICAL);
+    rinfo->bt_node_size = htole32(amp->am_block_size);
+    apfs_obj_init(&rnode->btn_o, (oid_t)tree_root_paddr, tx.tx_xid,
+        OBJ_BTREE_NODE | OBJ_PHYSICAL, 0);
+    apfs_obj_set_cksum(amp, rnode);
+    error = apfs_bwrite(amp, tree_root_paddr, root_bp);
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+    root_tree_oid = tree_root_paddr;
+
+    ext_key.hdr.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
+        ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
+    ext_key.logical_addr = htole64(file_offset);
+
+    ext_val.len_and_flags = htole64(length & J_EXT_LEN_MASK);
+    ext_val.phys_block_num = htole64((uint64_t)paddr);
+    ext_val.crypto_id = 0;
+
+    error = apfs_btree_insert_record(&tx, 0, &root_tree_oid,
+        &ext_key, sizeof(ext_key), &ext_val, sizeof(ext_val));
+    if (error != 0) {
+        apfs_tx_abort(&tx);
+        return error;
+    }
+
+    return apfs_tx_commit(&tx);
 }
 
 /*
@@ -2638,6 +3653,224 @@ test_simulated_interrupted_transaction(const char *image_path)
     synthetic_buffer_size = 0;
 }
 
+static void
+test_tx_spaceman_cow_and_bitmap_commit(const char *image_path)
+{
+    struct apfsmount amp;
+    apfs_tx_t tx;
+    apfs_paddr_t p1 = 0, p2 = 0;
+    int fd, error;
+    struct stat st;
+
+    fd = open(image_path, O_RDONLY);
+    assert(fd >= 0);
+    fstat(fd, &st);
+    synthetic_buffer_size = st.st_size;
+    synthetic_buffer = malloc(synthetic_buffer_size);
+    assert(synthetic_buffer != NULL);
+    ssize_t n = read(fd, synthetic_buffer, synthetic_buffer_size);
+    assert(n == (ssize_t)synthetic_buffer_size);
+    close(fd);
+
+    memset(&amp, 0, sizeof(amp));
+    nx_superblock_t *nx = (nx_superblock_t *)synthetic_buffer;
+    amp.am_block_size = le32toh(nx->nx_block_size);
+    memcpy(&amp.am_nx, nx, sizeof(*nx));
+    apfs_resv_init(&amp);
+
+    error = apfs_select_checkpoint(&amp);
+    assert(error == 0);
+    xid_t initial_xid = amp.am_checkpoint_xid;
+
+    /* Begin transaction */
+    error = apfs_tx_begin(&amp, &tx);
+    assert(error == 0);
+
+    /* Allocate physical blocks */
+    error = apfs_tx_alloc_block(&tx, 2, &p1);
+    assert(error == 0);
+    error = apfs_tx_alloc_block(&tx, 3, &p2);
+    assert(error == 0);
+
+    /* Commit transaction */
+    error = apfs_tx_commit(&tx);
+    assert(error == 0);
+    assert(tx.tx_state == APFS_TX_STATE_COMMITTED);
+
+    /* Remount and validate Space Manager */
+    struct apfsmount remount_amp;
+    memset(&remount_amp, 0, sizeof(remount_amp));
+    remount_amp.am_block_size = le32toh(nx->nx_block_size);
+    memcpy(&remount_amp.am_nx, nx, sizeof(*nx));
+    apfs_resv_init(&remount_amp);
+
+    error = apfs_select_checkpoint(&remount_amp);
+    assert(error == 0);
+    assert(remount_amp.am_checkpoint_xid == initial_xid + 1);
+
+    error = apfs_validate_spaceman(&remount_amp);
+    assert(error == 0);
+
+    apfs_resv_destroy(&amp);
+    apfs_resv_destroy(&remount_amp);
+    free(synthetic_buffer);
+    synthetic_buffer = NULL;
+    synthetic_buffer_size = 0;
+}
+
+static void
+test_btree_cow_insert_and_search(const char *image_path)
+{
+    struct apfsmount amp;
+    apfs_tx_t tx;
+    oid_t tree_oid = 0;
+    int fd, error;
+    struct stat st;
+
+    fd = open(image_path, O_RDONLY);
+    assert(fd >= 0);
+    fstat(fd, &st);
+    synthetic_buffer_size = st.st_size;
+    synthetic_buffer = malloc(synthetic_buffer_size);
+    assert(synthetic_buffer != NULL);
+    ssize_t n = read(fd, synthetic_buffer, synthetic_buffer_size);
+    assert(n == (ssize_t)synthetic_buffer_size);
+    close(fd);
+
+    memset(&amp, 0, sizeof(amp));
+    nx_superblock_t *nx = (nx_superblock_t *)synthetic_buffer;
+    amp.am_block_size = le32toh(nx->nx_block_size);
+    memcpy(&amp.am_nx, nx, sizeof(*nx));
+    apfs_resv_init(&amp);
+
+    error = apfs_select_checkpoint(&amp);
+    assert(error == 0);
+
+    error = apfs_tx_begin(&amp, &tx);
+    assert(error == 0);
+
+    /* Allocate empty root btree node */
+    apfs_paddr_t root_paddr;
+    error = apfs_tx_alloc_block(&tx, 1, &root_paddr);
+    assert(error == 0);
+
+    struct buf *bp;
+    error = apfs_getblk(&amp, root_paddr, &bp);
+    assert(error == 0);
+    btree_node_phys_t *rnode = (btree_node_phys_t *)bp->b_data;
+    memset(rnode, 0, amp.am_block_size);
+    rnode->btn_flags = htole16(BTNODE_ROOT | BTNODE_LEAF);
+    btree_info_t *rinfo = (btree_info_t *)((char *)rnode + amp.am_block_size - sizeof(btree_info_t));
+    rinfo->bt_flags = htole32(BTREE_PHYSICAL);
+    rinfo->bt_node_size = htole32(amp.am_block_size);
+    apfs_obj_init(&rnode->btn_o, (oid_t)root_paddr, tx.tx_xid, OBJ_BTREE_NODE | OBJ_PHYSICAL, 0);
+    apfs_obj_set_cksum(&amp, rnode);
+    error = apfs_bwrite(&amp, root_paddr, bp);
+    assert(error == 0);
+    tree_oid = root_paddr;
+
+    /* Insert records in arbitrary order */
+    uint64_t oids[] = { 0x300, 0x100, 0x500, 0x200, 0x400 };
+    for (int i = 0; i < 5; i++) {
+        j_key_t key;
+        key.obj_id_and_type = htole64((oids[i] & OBJ_ID_MASK) | ((uint64_t)APFS_TYPE_INODE << OBJ_TYPE_SHIFT));
+        j_inode_val_t val;
+        memset(&val, 0, sizeof(val));
+        val.private_id = htole64(oids[i]);
+        val.owner = htole32(1000 + i);
+
+        error = apfs_btree_insert_record(&tx, 0, &tree_oid, &key, sizeof(key), &val, sizeof(val));
+        assert(error == 0);
+    }
+
+    error = apfs_tx_commit(&tx);
+    assert(error == 0);
+
+    /* Verify on disk */
+    error = apfs_bread(&amp, (apfs_paddr_t)tree_oid, &bp);
+    assert(error == 0);
+    btree_node_phys_t *chk_node = (btree_node_phys_t *)bp->b_data;
+    assert(apfs_checksum_valid(&amp, chk_node));
+    assert(le32toh(chk_node->btn_nkeys) == 5);
+
+    /* Verify sorted order */
+    uint64_t prev_id = 0;
+    btree_info_t info;
+    memcpy(&info, (char *)chk_node + amp.am_block_size - sizeof(info), sizeof(info));
+    for (uint32_t i = 0; i < 5; i++) {
+        const void *k_ptr, *v_ptr;
+        size_t k_len, v_len;
+        error = apfs_btree_entry(&amp, chk_node, &info, i, &k_ptr, &k_len, &v_ptr, &v_len);
+        assert(error == 0);
+        const j_key_t *jk = k_ptr;
+        uint64_t id = le64toh(jk->obj_id_and_type) & OBJ_ID_MASK;
+        assert(id > prev_id);
+        prev_id = id;
+    }
+    brelse(bp, 0);
+
+    apfs_resv_destroy(&amp);
+    free(synthetic_buffer);
+    synthetic_buffer = NULL;
+    synthetic_buffer_size = 0;
+}
+
+static void
+test_file_creation_and_extent_writes(const char *image_path)
+{
+    struct apfsmount amp;
+    oid_t new_file_oid = 0;
+    int fd, error;
+    struct stat st;
+
+    fd = open(image_path, O_RDONLY);
+    assert(fd >= 0);
+    fstat(fd, &st);
+    synthetic_buffer_size = st.st_size;
+    synthetic_buffer = malloc(synthetic_buffer_size);
+    assert(synthetic_buffer != NULL);
+    ssize_t n = read(fd, synthetic_buffer, synthetic_buffer_size);
+    assert(n == (ssize_t)synthetic_buffer_size);
+    close(fd);
+
+    memset(&amp, 0, sizeof(amp));
+    nx_superblock_t *nx = (nx_superblock_t *)synthetic_buffer;
+    amp.am_block_size = le32toh(nx->nx_block_size);
+    memcpy(&amp.am_nx, nx, sizeof(*nx));
+    apfs_resv_init(&amp);
+
+    error = apfs_select_checkpoint(&amp);
+    assert(error == 0);
+
+    /* Create file */
+    error = apfs_create_file(&amp, 0x1, "testfile.dat", 0644, 501, 20, &new_file_oid);
+    assert(error == 0);
+    assert(new_file_oid != 0);
+
+    /* Write file extent */
+    error = apfs_write_file_extent(&amp, new_file_oid, 0, 4096, 500);
+    assert(error == 0);
+
+    /* Validate spaceman after writes */
+    struct apfsmount remount_amp;
+    memset(&remount_amp, 0, sizeof(remount_amp));
+    remount_amp.am_block_size = le32toh(nx->nx_block_size);
+    memcpy(&remount_amp.am_nx, nx, sizeof(*nx));
+    apfs_resv_init(&remount_amp);
+
+    error = apfs_select_checkpoint(&remount_amp);
+    assert(error == 0);
+
+    error = apfs_validate_spaceman(&remount_amp);
+    assert(error == 0);
+
+    apfs_resv_destroy(&amp);
+    apfs_resv_destroy(&remount_amp);
+    free(synthetic_buffer);
+    synthetic_buffer = NULL;
+    synthetic_buffer_size = 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2797,6 +4030,33 @@ main(int argc, char **argv)
         printf("\n--- Test Case: Simulated Interrupted Transaction Recovery (%s) ---\n", test_images[i]);
         test_simulated_interrupted_transaction(test_images[i]);
         printf("PASS: Interrupted transaction cleanly recovers prior checkpoint\n");
+    }
+
+    /* 14. Milestone 5: Space Manager Transactional Updates & Bitmap COW */
+    for (size_t i = 0; i < sizeof(test_images)/sizeof(test_images[0]); i++) {
+        if (access(test_images[i], F_OK) != 0)
+            continue;
+        printf("\n--- Test Case: Space Manager COW & Bitmap Commit (%s) ---\n", test_images[i]);
+        test_tx_spaceman_cow_and_bitmap_commit(test_images[i]);
+        printf("PASS: Space Manager COW and allocation bitmap commit verified\n");
+    }
+
+    /* 15. Milestone 6: B-Tree COW Insertion & Sorted Search */
+    for (size_t i = 0; i < sizeof(test_images)/sizeof(test_images[0]); i++) {
+        if (access(test_images[i], F_OK) != 0)
+            continue;
+        printf("\n--- Test Case: B-Tree COW Insertion & Search (%s) ---\n", test_images[i]);
+        test_btree_cow_insert_and_search(test_images[i]);
+        printf("PASS: B-Tree Copy-on-Write insertion and sorted traversal verified\n");
+    }
+
+    /* 16. Milestone 7: Filesystem File Creation & Extent Writes */
+    for (size_t i = 0; i < sizeof(test_images)/sizeof(test_images[0]); i++) {
+        if (access(test_images[i], F_OK) != 0)
+            continue;
+        printf("\n--- Test Case: File Creation & Extent Writes (%s) ---\n", test_images[i]);
+        test_file_creation_and_extent_writes(test_images[i]);
+        printf("PASS: File creation and extent allocation verified\n");
     }
 
     printf("\n=======================================================\n");

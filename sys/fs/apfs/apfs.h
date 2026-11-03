@@ -498,6 +498,18 @@ typedef struct apfs_resv_entry {
     LIST_ENTRY(apfs_resv_entry) re_link;
 } apfs_resv_entry_t;
 
+/* B-Tree Traversal Path Stack */
+typedef struct apfs_btree_path_entry {
+    apfs_paddr_t    pe_paddr;
+    uint32_t        pe_idx;
+    uint32_t        pe_flags;
+} apfs_btree_path_entry_t;
+
+typedef struct apfs_btree_path {
+    uint32_t                bp_depth;
+    apfs_btree_path_entry_t bp_entries[APFS_BTREE_MAX_DEPTH];
+} apfs_btree_path_t;
+
 /* Global reservation pool in apfsmount */
 typedef struct apfs_resv_pool {
     kmutex_t                rp_lock;
@@ -577,6 +589,7 @@ int apfs_btree_search(struct apfsmount *, oid_t, oid_t, void *, size_t,
     void *, size_t, void *, size_t, size_t *);
 int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_btree_iter_cb, void *);
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
+int apfs_btree_insert_record(apfs_tx_t *, oid_t, oid_t *, const void *, size_t, const void *, size_t);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
 int apfs_bread(struct apfsmount *, apfs_paddr_t, struct buf **);
 int apfs_getblk(struct apfsmount *, apfs_paddr_t, struct buf **);
@@ -602,6 +615,7 @@ bool apfs_resv_is_reserved(struct apfsmount *, uint64_t, uint64_t);
 int  apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
 int  apfs_free_block(struct apfsmount *, apfs_paddr_t);
 int  apfs_validate_spaceman(struct apfsmount *);
+int  apfs_spaceman_tx_update(apfs_tx_t *);
 
 /* Transaction & COW Helpers */
 void apfs_obj_init(obj_phys_t *, oid_t, uint64_t, uint32_t, uint32_t);
@@ -614,7 +628,11 @@ void apfs_tx_abort(apfs_tx_t *);
 
 /* OMap Helpers */
 int apfs_omap_lookup(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t *);
-int apfs_omap_update(struct apfsmount *, oid_t, xid_t, apfs_paddr_t);
+int apfs_omap_update(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t);
+
+/* Filesystem Operations Helpers */
+int apfs_create_file(struct apfsmount *, oid_t, const char *, mode_t, uid_t, gid_t, oid_t *);
+int apfs_write_file_extent(struct apfsmount *, oid_t, uint64_t, uint64_t, apfs_paddr_t);
 
 /* Checksum */
 uint64_t apfs_fletcher64(const void *, size_t);

@@ -208,11 +208,33 @@ int
 apfs_vop_create(void *v)
 {
 	struct vop_create_v3_args *ap = v;
-	struct mount *mp = ap->a_dvp->v_mount;
-	if (mp->mnt_flag & MNT_RDONLY)
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode **vpp = ap->a_vpp;
+	struct componentname *cnp = ap->a_cnp;
+	struct vattr *vap = ap->a_vap;
+	struct apfsnode *dnode = VTOA(dvp);
+	struct apfsmount *amp = dnode->a_amp;
+	oid_t new_ino_oid;
+	char name_buf[256];
+	int error;
+
+	if (dvp->v_mount->mnt_flag & MNT_RDONLY)
 		return EROFS;
-	
-	return EOPNOTSUPP;
+
+	if (cnp->cn_namelen >= sizeof(name_buf))
+		return ENAMETOOLONG;
+
+	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
+	name_buf[cnp->cn_namelen] = '\0';
+
+	error = apfs_create_file(amp, dnode->a_oid, name_buf, vap->va_mode,
+	    vap->va_uid, vap->va_gid, &new_ino_oid);
+	if (error != 0)
+		return error;
+
+	ino_t ino = (ino_t)new_ino_oid;
+	error = vcache_get(dvp->v_mount, &ino, sizeof(ino), vpp);
+	return error;
 }
 
 int
@@ -383,11 +405,94 @@ int
 apfs_vop_write(void *v)
 {
 	struct vop_write_args *ap = v;
-	struct mount *mp = ap->a_vp->v_mount;
+	struct vnode *vp = ap->a_vp;
+	struct uio *uio = ap->a_uio;
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = apnode->a_amp;
+	struct mount *mp = vp->v_mount;
+	struct buf *bp;
+	apfs_paddr_t paddr;
+	int error = 0;
+
 	if (mp->mnt_flag & MNT_RDONLY)
 		return EROFS;
-	
-	return EOPNOTSUPP;
+
+	if (vp->v_type != VREG)
+		return EISDIR;
+
+	while (uio->uio_resid > 0) {
+		off_t offset = uio->uio_offset;
+		uint32_t off_in_block = offset % amp->am_block_size;
+		uint32_t bytes_to_write = amp->am_block_size - off_in_block;
+		if (bytes_to_write > uio->uio_resid)
+			bytes_to_write = uio->uio_resid;
+
+		apfs_tx_t tx;
+		error = apfs_tx_begin(amp, &tx);
+		if (error != 0)
+			break;
+
+		error = apfs_tx_alloc_block(&tx, 1, &paddr);
+		if (error != 0) {
+			apfs_tx_abort(&tx);
+			break;
+		}
+
+		error = apfs_getblk(amp, paddr, &bp);
+		if (error != 0) {
+			apfs_tx_abort(&tx);
+			break;
+		}
+
+		memset(bp->b_data, 0, amp->am_block_size);
+		error = uiomove((uint8_t *)bp->b_data + off_in_block, bytes_to_write, uio);
+		if (error != 0) {
+			brelse(bp, 0);
+			apfs_tx_abort(&tx);
+			break;
+		}
+
+		error = apfs_bwrite(amp, paddr, bp);
+		if (error != 0) {
+			apfs_tx_abort(&tx);
+			break;
+		}
+
+		/* Insert extent record */
+		j_extent_key_t ext_key;
+		j_phys_ext_val_t ext_val;
+
+		ext_key.hdr.obj_id_and_type = htole64((apnode->a_oid & OBJ_ID_MASK) |
+		    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
+		ext_key.logical_addr = htole64((uint64_t)(offset - off_in_block));
+
+		ext_val.len_and_flags = htole64(amp->am_block_size & J_EXT_LEN_MASK);
+		ext_val.phys_block_num = htole64((uint64_t)paddr);
+		ext_val.crypto_id = 0;
+
+		oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
+		oid_t omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
+
+		error = apfs_btree_insert_record(&tx, omap_oid, &root_tree_oid,
+		    &ext_key, sizeof(ext_key), &ext_val, sizeof(ext_val));
+		if (error != 0) {
+			apfs_tx_abort(&tx);
+			break;
+		}
+
+		amp->am_sb.apfs_root_tree_oid = htole64(root_tree_oid);
+
+		/* Update file size */
+		if (offset + bytes_to_write > apnode->a_ino.uncompressed_size) {
+			apnode->a_ino.uncompressed_size = offset + bytes_to_write;
+		}
+
+		error = apfs_tx_commit(&tx);
+		if (error != 0)
+			break;
+	}
+
+	return error;
 }
 
 int
