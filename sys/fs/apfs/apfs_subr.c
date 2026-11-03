@@ -475,7 +475,7 @@ apfs_spaceman_paddr_valid(struct apfsmount *amp, uint64_t paddr)
 {
 	uint64_t block_count = le64toh(amp->am_nx.nx_block_count);
 
-	return paddr < block_count && paddr <= INT64_MAX;
+	return paddr != 0 && paddr < block_count && paddr <= INT64_MAX;
 }
 
 int
@@ -550,7 +550,7 @@ apfs_validate_spaceman(struct apfsmount *amp)
 
 	if (le32toh(sm->sm_block_size) != amp->am_block_size ||
 	    blocks_per_chunk == 0 || chunks_per_cib == 0 ||
-	    struct_size < sizeof(*sm) || struct_size > amp->am_block_size ||
+	    struct_size > amp->am_block_size ||
 	    block_count != le64toh(amp->am_nx.nx_block_count) ||
 	    chunk_count == 0 || cib_count == 0) {
 		printf("apfs_spaceman: invalid geometry (block size %u/%u, "
@@ -578,8 +578,8 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	    chunks_per_cib >
 	    (amp->am_block_size - sizeof(chunk_info_block_phys_t)) /
 	    sizeof(chunk_info_phys_t) ||
-	    addr_offset < sizeof(*sm) || addr_offset > struct_size ||
-	    cib_count > (struct_size - addr_offset) / sizeof(uint64_t)) {
+	    addr_offset < sizeof(*sm) || addr_offset > amp->am_block_size ||
+	    cib_count > (amp->am_block_size - addr_offset) / sizeof(uint64_t)) {
 		printf("apfs_spaceman: invalid bitmap/CIB layout "
 		    "(blocks/chunk %u, chunks/CIB %u, address offset %u, "
 		    "CIB count %u, structure size %u)\n",

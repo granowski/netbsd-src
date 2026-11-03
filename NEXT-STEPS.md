@@ -20,6 +20,8 @@ The key principle is **don't enable writes until allocation, copy-on-write metad
 
 ## Immediate next step
 
-The next actionable item is **Milestone 1**: collect the `apfs_spaceman` output from the test machine and compare it with an independent APFS reader. The important lines are the validated free-block total and the scanner's bitmap polarity and candidate details. That confirms—or exposes errors in—the assumptions the current read-only scanner makes.
+**Milestone 1 (Confirm Space Manager decoding)** is complete: Space Manager decoding, CIB traversal, free counts, LSB-first bit ordering, and bitmap polarity (clear bits `0` = free, set bits `1` = allocated) have been cross-validated across multiple test images against an independent APFS reference tool.
+
+The next actionable item is **Milestone 2**: Complete read-only allocation validation (internal pool, allocation zones, free-queue accounting, and candidate safety bounds).
 
 Until Milestones 4–6 are complete and validated, keep the filesystem forced read-only. The current allocator and B-tree insertion routines are still placeholders; connecting them to the write path before those foundations exist could corrupt the volume.
