@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Cross-validation script for APFS Space Manager (Milestone 2: Read-Only Allocation Validation).
-Compares C-based kernel decoder outputs against the independent Python reference parser.
+Cross-validation script for APFS Space Manager (Milestone 3: In-Memory Reservation & Allocation Model).
+Compares C-based kernel decoder outputs against the independent Python reference parser and validates disk immutability.
 """
 
 import os
@@ -9,6 +9,7 @@ import sys
 import subprocess
 import json
 import re
+import hashlib
 
 sys.path.insert(0, os.path.dirname(__file__))
 from ref_spaceman import APFSReferenceParser
@@ -105,9 +106,16 @@ def cross_validate_image(image_path: str):
 
     print(f"STATUS: Image {os.path.basename(image_path)} PASSED 100% CROSS-VALIDATION")
 
+def get_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
 def main():
     # Ensure t_spaceman binary is compiled
-    rc, out, err = run_cmd("clang -Wall -Wextra tests/fs/apfs/t_spaceman.c -o /tmp/t_spaceman")
+    rc, out, err = run_cmd("clang -Wall -Wextra tests/fs/apfs/t_spaceman.c -o /tmp/t_spaceman -lpthread")
     if rc != 0:
         print(f"Compilation failed: {err}")
         sys.exit(1)
@@ -125,8 +133,15 @@ def main():
             run_cmd(f"python3 {os.path.join(os.path.dirname(__file__), 'generate_test_images.py')}")
             break
 
+    # Record pre-test SHA256 hashes for disk immutability verification
+    initial_hashes = {}
     for img in images:
-        cross_validate_image(img)
+        if os.path.exists(img):
+            initial_hashes[img] = get_sha256(img)
+
+    for img in images:
+        if os.path.exists(img):
+            cross_validate_image(img)
 
     print("\n-------------------------------------------------------")
     print("Running Full Failure Mode & Synthetic Edge-Case Suite...")
@@ -137,7 +152,15 @@ def main():
         sys.exit(1)
     print(out)
 
-    print("\nALL MILESTONE 2 CROSS-VALIDATION TESTS PASSED CLEANLY!")
+    print("\n-------------------------------------------------------")
+    print("Verifying Disk Image Bitwise Immutability (SHA-256)...")
+    print("-------------------------------------------------------")
+    for img, initial_hash in initial_hashes.items():
+        final_hash = get_sha256(img)
+        assert initial_hash == final_hash, f"Immutability violated for {img}! Before: {initial_hash}, After: {final_hash}"
+        print(f"  ✓ Image {os.path.basename(img)} byte-for-byte identical (SHA-256: {initial_hash[:16]}...)")
+
+    print("\nALL MILESTONE 3 CROSS-VALIDATION & IMMUTABILITY TESTS PASSED CLEANLY!")
 
 if __name__ == "__main__":
     main()

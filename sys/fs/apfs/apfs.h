@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 #include <sys/vnode.h>
 #include <sys/uuid.h>
+#include <sys/queue.h>
 #include <miscfs/genfs/genfs_node.h>
 
 /* APFS Primitive Types */
@@ -489,6 +490,30 @@ struct apfs_args {
 	char *fspec;		/* block special device to mount */
 };
 
+/* In-memory block reservation span */
+typedef struct apfs_resv_entry {
+    uint64_t                re_paddr;
+    uint64_t                re_block_count;
+    uint64_t                re_tx_id;
+    LIST_ENTRY(apfs_resv_entry) re_link;
+} apfs_resv_entry_t;
+
+/* Global reservation pool in apfsmount */
+typedef struct apfs_resv_pool {
+    kmutex_t                rp_lock;
+    uint64_t                rp_total_reserved;
+    uint64_t                rp_last_chunk;
+    uint32_t                rp_last_bit;
+    LIST_HEAD(apfs_resv_head, apfs_resv_entry) rp_entries;
+} apfs_resv_pool_t;
+
+/* Per-transaction reservation handle */
+typedef struct apfs_resv_tx {
+    uint64_t                rt_tx_id;
+    uint64_t                rt_count;
+    LIST_HEAD(apfs_resv_tx_head, apfs_resv_entry) rt_entries;
+} apfs_resv_tx_t;
+
 #ifdef _KERNEL
 struct apfsmount {
     struct mount    *am_mountp;
@@ -506,6 +531,7 @@ struct apfsmount {
     bool             am_sealed;
     kmutex_t         am_lock;
     struct vnode    *am_rootvp;
+    apfs_resv_pool_t am_resv_pool;
 };
 
 struct apfsnode {
@@ -536,12 +562,18 @@ int apfs_select_checkpoint(struct apfsmount *);
 int apfs_checkpoint_lookup(struct apfsmount *, oid_t, oid_t,
     apfs_paddr_t *);
 
-/* Space Manager Helpers */
+/* Space Manager & Reservation Helpers */
 bool apfs_range_valid(struct apfsmount *, uint64_t, uint64_t);
 bool apfs_range_overlaps(uint64_t, uint64_t, uint64_t, uint64_t);
 int  apfs_exclusion_add(struct apfsmount *, apfs_exclusion_table_t *, uint64_t, uint64_t, const char *);
 int  apfs_build_container_exclusions(struct apfsmount *, apfs_exclusion_table_t *);
 bool apfs_spaceman_candidate_safe(struct apfsmount *, const apfs_exclusion_table_t *, uint64_t);
+int  apfs_resv_init(struct apfsmount *);
+void apfs_resv_destroy(struct apfsmount *);
+int  apfs_resv_alloc(struct apfsmount *, apfs_resv_tx_t *, uint64_t, apfs_paddr_t *);
+void apfs_resv_abort(struct apfsmount *, apfs_resv_tx_t *);
+void apfs_resv_free(struct apfsmount *, apfs_paddr_t, uint64_t);
+bool apfs_resv_is_reserved(struct apfsmount *, uint64_t, uint64_t);
 int  apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
 int  apfs_free_block(struct apfsmount *, apfs_paddr_t);
 int  apfs_validate_spaceman(struct apfsmount *);

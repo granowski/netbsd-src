@@ -16,6 +16,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <assert.h>
+#include <pthread.h>
+#include <sys/queue.h>
 
 #ifdef __APPLE__
 #include <libkern/OSByteOrder.h>
@@ -238,11 +240,47 @@ typedef struct checkpoint_map_phys {
     checkpoint_mapping_t cpm_map[0];
 } checkpoint_map_phys_t;
 
+typedef pthread_mutex_t kmutex_t;
+#define IPL_NONE 0
+#define MUTEX_DEFAULT 0
+#define mutex_init(m, a, b) pthread_mutex_init(m, NULL)
+#define mutex_destroy(m) pthread_mutex_destroy(m)
+#define mutex_enter(m) pthread_mutex_lock(m)
+#define mutex_exit(m) pthread_mutex_unlock(m)
+#define KM_SLEEP 0
+#define kmem_zalloc(s, f) calloc(1, s)
+#define kmem_free(p, s) free(p)
+
+/* In-memory block reservation span */
+typedef struct apfs_resv_entry {
+    uint64_t                re_paddr;
+    uint64_t                re_block_count;
+    uint64_t                re_tx_id;
+    LIST_ENTRY(apfs_resv_entry) re_link;
+} apfs_resv_entry_t;
+
+/* Global reservation pool in apfsmount */
+typedef struct apfs_resv_pool {
+    kmutex_t                rp_lock;
+    uint64_t                rp_total_reserved;
+    uint64_t                rp_last_chunk;
+    uint32_t                rp_last_bit;
+    LIST_HEAD(apfs_resv_head, apfs_resv_entry) rp_entries;
+} apfs_resv_pool_t;
+
+/* Per-transaction reservation handle */
+typedef struct apfs_resv_tx {
+    uint64_t                rt_tx_id;
+    uint64_t                rt_count;
+    LIST_HEAD(apfs_resv_tx_head, apfs_resv_entry) rt_entries;
+} apfs_resv_tx_t;
+
 struct apfsmount {
     nx_superblock_t am_nx;
     uint32_t        am_block_size;
     uint32_t        am_desc_blocks;
     xid_t           am_checkpoint_xid;
+    apfs_resv_pool_t am_resv_pool;
 };
 
 struct buf {
@@ -304,7 +342,7 @@ apfs_bread(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
 }
 
 void
-brelse(struct buf *bp, int set)
+brelse(struct buf *bp, int set __unused)
 {
     if (bp == NULL)
         return;
@@ -705,6 +743,393 @@ apfs_spaceman_candidate_safe(struct apfsmount *amp,
     return true;
 }
 
+int
+apfs_resv_init(struct apfsmount *amp)
+{
+    mutex_init(&amp->am_resv_pool.rp_lock, MUTEX_DEFAULT, IPL_NONE);
+    amp->am_resv_pool.rp_total_reserved = 0;
+    amp->am_resv_pool.rp_last_chunk = 0;
+    amp->am_resv_pool.rp_last_bit = 0;
+    LIST_INIT(&amp->am_resv_pool.rp_entries);
+    return 0;
+}
+
+void
+apfs_resv_destroy(struct apfsmount *amp)
+{
+    apfs_resv_entry_t *entry, *tmp;
+
+    mutex_enter(&amp->am_resv_pool.rp_lock);
+    entry = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+    while (entry != NULL) {
+        tmp = LIST_NEXT(entry, re_link);
+        LIST_REMOVE(entry, re_link);
+        kmem_free(entry, sizeof(*entry));
+        entry = tmp;
+    }
+    amp->am_resv_pool.rp_total_reserved = 0;
+    mutex_exit(&amp->am_resv_pool.rp_lock);
+    mutex_destroy(&amp->am_resv_pool.rp_lock);
+}
+
+static bool
+apfs_resv_is_reserved_locked(struct apfsmount *amp, uint64_t paddr, uint64_t count)
+{
+    apfs_resv_entry_t *entry;
+
+    if (count == 0)
+        return false;
+
+    LIST_FOREACH(entry, &amp->am_resv_pool.rp_entries, re_link) {
+        if (apfs_range_overlaps(paddr, count,
+            entry->re_paddr, entry->re_block_count)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool
+apfs_resv_is_reserved(struct apfsmount *amp, uint64_t paddr, uint64_t count)
+{
+    bool reserved;
+
+    mutex_enter(&amp->am_resv_pool.rp_lock);
+    reserved = apfs_resv_is_reserved_locked(amp, paddr, count);
+    mutex_exit(&amp->am_resv_pool.rp_lock);
+
+    return reserved;
+}
+
+int
+apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
+    apfs_paddr_t *paddrp)
+{
+    struct buf *smbp = NULL, *cibp = NULL, *bp = NULL;
+    spaceman_phys_t *sm;
+    spaceman_device_t *dev;
+    apfs_exclusion_table_t excl_table;
+    uint64_t block_count, chunk_count, ip_block_count;
+    uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
+    uint32_t ip_bm_block_count;
+    apfs_paddr_t spaceman_paddr, ip_base, ip_bm_base;
+    const apfs_paddr_t *cib_addrs;
+    int error;
+
+    if (count == 0 || paddrp == NULL || count > INT64_MAX)
+        return EINVAL;
+
+    *paddrp = 0;
+
+    if (le64toh(amp->am_nx.nx_spaceman_oid) == 0)
+        return EINVAL;
+
+    error = apfs_build_container_exclusions(amp, &excl_table);
+    if (error != 0)
+        return error;
+
+    error = apfs_checkpoint_lookup(amp,
+        le64toh(amp->am_nx.nx_spaceman_oid), 0, &spaceman_paddr);
+    if (error != 0)
+        return error;
+
+    if (!apfs_spaceman_paddr_valid(amp, spaceman_paddr))
+        return EINVAL;
+
+    error = apfs_bread(amp, spaceman_paddr, &smbp);
+    if (error != 0)
+        return error;
+
+    sm = (spaceman_phys_t *)smbp->b_data;
+    if (!apfs_checksum_valid(amp, sm) ||
+        le64toh(sm->o.o_oid) != le64toh(amp->am_nx.nx_spaceman_oid) ||
+        le64toh(sm->o.o_xid) > amp->am_checkpoint_xid ||
+        (le32toh(sm->o.o_type) & OBJECT_TYPE_MASK) != OBJ_SPACEMAN) {
+        brelse(smbp, 0);
+        return EINVAL;
+    }
+
+    blocks_per_chunk = le32toh(sm->sm_blocks_per_chunk);
+    chunks_per_cib = le32toh(sm->sm_chunks_per_cib);
+    dev = &sm->sm_dev[0];
+    block_count = le64toh(dev->sm_block_count);
+    chunk_count = le64toh(dev->sm_chunk_count);
+    cib_count = le32toh(dev->sm_cib_count);
+    addr_offset = le32toh(dev->sm_addr_offset);
+
+    if (blocks_per_chunk == 0 || chunks_per_cib == 0 ||
+        chunk_count == 0 || cib_count == 0 ||
+        addr_offset < sizeof(*sm) || addr_offset > amp->am_block_size ||
+        cib_count > (amp->am_block_size - addr_offset) / sizeof(apfs_paddr_t)) {
+        brelse(smbp, 0);
+        return EINVAL;
+    }
+
+    ip_block_count = le64toh(sm->sm_ip_block_count);
+    ip_bm_block_count = le32toh(sm->sm_ip_bm_block_count);
+    ip_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_base);
+    ip_bm_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_bm_base);
+
+    if (ip_block_count > 0 &&
+        apfs_range_valid(amp, (uint64_t)ip_base, ip_block_count)) {
+        (void)apfs_exclusion_add(amp, &excl_table, (uint64_t)ip_base,
+            ip_block_count, "internal pool data");
+    }
+    if (ip_bm_block_count > 0 &&
+        apfs_range_valid(amp, (uint64_t)ip_bm_base, (uint64_t)ip_bm_block_count)) {
+        (void)apfs_exclusion_add(amp, &excl_table, (uint64_t)ip_bm_base,
+            (uint64_t)ip_bm_block_count, "internal pool bitmap");
+    }
+
+    cib_addrs = (const apfs_paddr_t *)((const uint8_t *)sm + addr_offset);
+
+    mutex_enter(&amp->am_resv_pool.rp_lock);
+
+    uint64_t start_chunk = amp->am_resv_pool.rp_last_chunk % chunk_count;
+    uint32_t start_bit = amp->am_resv_pool.rp_last_bit;
+    bool found = false;
+    uint64_t found_paddr = 0;
+
+    for (uint64_t c_offset = 0; c_offset < chunk_count && !found; c_offset++) {
+        uint64_t chunk_idx = (start_chunk + c_offset) % chunk_count;
+        uint32_t cib_idx = chunk_idx / chunks_per_cib;
+        uint32_t chunk_in_cib = chunk_idx % chunks_per_cib;
+
+        if (cib_idx >= cib_count)
+            continue;
+
+        apfs_paddr_t cib_paddr = (apfs_paddr_t)le64toh((uint64_t)cib_addrs[cib_idx]);
+        if (!apfs_spaceman_paddr_valid(amp, (uint64_t)cib_paddr))
+            continue;
+
+        error = apfs_bread(amp, cib_paddr, &cibp);
+        if (error != 0)
+            continue;
+
+        chunk_info_block_phys_t *cib = (chunk_info_block_phys_t *)cibp->b_data;
+        if (!apfs_checksum_valid(amp, cib) ||
+            (le32toh(cib->cib_o.o_type) & OBJECT_TYPE_MASK) != OBJ_SPACEMAN_CIB) {
+            brelse(cibp, 0);
+            cibp = NULL;
+            continue;
+        }
+
+        chunk_info_phys_t *chunk = &cib->cib_chunk_info[chunk_in_cib];
+        uint32_t ci_free_count = le32toh(chunk->ci_free_count);
+        apfs_paddr_t bitmap_paddr = (apfs_paddr_t)le64toh((uint64_t)chunk->ci_bitmap_addr);
+        uint64_t chunk_start = (uint64_t)chunk_idx * blocks_per_chunk;
+        uint32_t expected_blocks = (chunk_start + blocks_per_chunk > block_count) ?
+            (uint32_t)(block_count - chunk_start) : blocks_per_chunk;
+
+        if (ci_free_count < count || bitmap_paddr == 0 ||
+            !apfs_spaceman_paddr_valid(amp, (uint64_t)bitmap_paddr)) {
+            brelse(cibp, 0);
+            cibp = NULL;
+            continue;
+        }
+
+        error = apfs_bread(amp, bitmap_paddr, &bp);
+        if (error != 0) {
+            brelse(cibp, 0);
+            cibp = NULL;
+            continue;
+        }
+
+        const uint8_t *bitmap = (const uint8_t *)bp->b_data;
+        uint32_t bit_start = (c_offset == 0) ? start_bit : 0;
+        if (bit_start >= expected_blocks)
+            bit_start = 0;
+
+        /* Scan from bit_start to end of chunk */
+        for (uint32_t bit = bit_start; bit + count <= expected_blocks; bit++) {
+            bool run_ok = true;
+            for (uint64_t k = 0; k < count; k++) {
+                uint32_t b = bit + (uint32_t)k;
+                uint64_t blk = chunk_start + b;
+
+                /* Clear bit (0 = free) */
+                if ((bitmap[b >> 3] & (1U << (b & 7))) != 0) {
+                    run_ok = false;
+                    bit = b;
+                    break;
+                }
+                if (!apfs_spaceman_candidate_safe(amp, &excl_table, blk)) {
+                    run_ok = false;
+                    break;
+                }
+                if (apfs_resv_is_reserved_locked(amp, blk, 1)) {
+                    run_ok = false;
+                    break;
+                }
+            }
+
+            if (run_ok) {
+                found_paddr = chunk_start + bit;
+                amp->am_resv_pool.rp_last_chunk = chunk_idx;
+                amp->am_resv_pool.rp_last_bit = bit + (uint32_t)count;
+                found = true;
+                break;
+            }
+        }
+
+        /* If not found on start_chunk, check [0, bit_start) */
+        if (!found && c_offset == 0 && bit_start > 0) {
+            for (uint32_t bit = 0; bit + count <= bit_start && bit + count <= expected_blocks; bit++) {
+                bool run_ok = true;
+                for (uint64_t k = 0; k < count; k++) {
+                    uint32_t b = bit + (uint32_t)k;
+                    uint64_t blk = chunk_start + b;
+
+                    if ((bitmap[b >> 3] & (1U << (b & 7))) != 0) {
+                        run_ok = false;
+                        bit = b;
+                        break;
+                    }
+                    if (!apfs_spaceman_candidate_safe(amp, &excl_table, blk)) {
+                        run_ok = false;
+                        break;
+                    }
+                    if (apfs_resv_is_reserved_locked(amp, blk, 1)) {
+                        run_ok = false;
+                        break;
+                    }
+                }
+
+                if (run_ok) {
+                    found_paddr = chunk_start + bit;
+                    amp->am_resv_pool.rp_last_chunk = chunk_idx;
+                    amp->am_resv_pool.rp_last_bit = bit + (uint32_t)count;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        brelse(bp, 0);
+        bp = NULL;
+        brelse(cibp, 0);
+        cibp = NULL;
+    }
+
+    brelse(smbp, 0);
+    smbp = NULL;
+
+    if (!found) {
+        mutex_exit(&amp->am_resv_pool.rp_lock);
+        return ENOSPC;
+    }
+
+    /* Allocate global reservation entry */
+    apfs_resv_entry_t *pool_entry = kmem_zalloc(sizeof(*pool_entry), KM_SLEEP);
+    pool_entry->re_paddr = found_paddr;
+    pool_entry->re_block_count = count;
+    pool_entry->re_tx_id = (tx != NULL) ? tx->rt_tx_id : 0;
+    LIST_INSERT_HEAD(&amp->am_resv_pool.rp_entries, pool_entry, re_link);
+    amp->am_resv_pool.rp_total_reserved += count;
+
+    /* If a transaction context was provided, track it in the tx handle */
+    if (tx != NULL) {
+        apfs_resv_entry_t *tx_entry = kmem_zalloc(sizeof(*tx_entry), KM_SLEEP);
+        tx_entry->re_paddr = found_paddr;
+        tx_entry->re_block_count = count;
+        tx_entry->re_tx_id = tx->rt_tx_id;
+        LIST_INSERT_HEAD(&tx->rt_entries, tx_entry, re_link);
+        tx->rt_count += count;
+    }
+
+    mutex_exit(&amp->am_resv_pool.rp_lock);
+
+    *paddrp = (apfs_paddr_t)found_paddr;
+    return 0;
+}
+
+void
+apfs_resv_abort(struct apfsmount *amp, apfs_resv_tx_t *tx)
+{
+    apfs_resv_entry_t *tx_entry, *tx_tmp;
+
+    if (tx == NULL)
+        return;
+
+    mutex_enter(&amp->am_resv_pool.rp_lock);
+    tx_entry = LIST_FIRST(&tx->rt_entries);
+    while (tx_entry != NULL) {
+        tx_tmp = LIST_NEXT(tx_entry, re_link);
+
+        /* Find and remove matching reservation from global pool */
+        apfs_resv_entry_t *p_entry, *p_tmp;
+        p_entry = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+        while (p_entry != NULL) {
+            p_tmp = LIST_NEXT(p_entry, re_link);
+            if (p_entry->re_paddr == tx_entry->re_paddr &&
+                p_entry->re_block_count == tx_entry->re_block_count) {
+                LIST_REMOVE(p_entry, re_link);
+                if (amp->am_resv_pool.rp_total_reserved >= p_entry->re_block_count)
+                    amp->am_resv_pool.rp_total_reserved -= p_entry->re_block_count;
+                else
+                    amp->am_resv_pool.rp_total_reserved = 0;
+                kmem_free(p_entry, sizeof(*p_entry));
+                break;
+            }
+            p_entry = p_tmp;
+        }
+
+        LIST_REMOVE(tx_entry, re_link);
+        kmem_free(tx_entry, sizeof(*tx_entry));
+        tx_entry = tx_tmp;
+    }
+    tx->rt_count = 0;
+    mutex_exit(&amp->am_resv_pool.rp_lock);
+}
+
+void
+apfs_resv_free(struct apfsmount *amp, apfs_paddr_t paddr, uint64_t count)
+{
+    apfs_resv_entry_t *entry, *tmp;
+
+    if (count == 0 || paddr < 0)
+        return;
+
+    mutex_enter(&amp->am_resv_pool.rp_lock);
+    entry = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+    while (entry != NULL) {
+        tmp = LIST_NEXT(entry, re_link);
+        if (entry->re_paddr == (uint64_t)paddr &&
+            entry->re_block_count == count) {
+            LIST_REMOVE(entry, re_link);
+            if (amp->am_resv_pool.rp_total_reserved >= count)
+                amp->am_resv_pool.rp_total_reserved -= count;
+            else
+                amp->am_resv_pool.rp_total_reserved = 0;
+            kmem_free(entry, sizeof(*entry));
+            break;
+        } else if (entry->re_paddr == (uint64_t)paddr && entry->re_block_count > count) {
+            entry->re_paddr += count;
+            entry->re_block_count -= count;
+            if (amp->am_resv_pool.rp_total_reserved >= count)
+                amp->am_resv_pool.rp_total_reserved -= count;
+            else
+                amp->am_resv_pool.rp_total_reserved = 0;
+            break;
+        }
+        entry = tmp;
+    }
+    mutex_exit(&amp->am_resv_pool.rp_lock);
+}
+
+int
+apfs_alloc_block(struct apfsmount *amp, apfs_paddr_t *paddrp)
+{
+    return apfs_resv_alloc(amp, NULL, 1, paddrp);
+}
+
+int
+apfs_free_block(struct apfsmount *amp, apfs_paddr_t paddr)
+{
+    apfs_resv_free(amp, paddr, 1);
+    return 0;
+}
+
 /*
  * apfs_validate_spaceman matching sys/fs/apfs/apfs_subr.c
  */
@@ -824,6 +1249,7 @@ apfs_validate_spaceman(struct apfsmount *amp)
 
     ip_block_count = le64toh(sm->sm_ip_block_count);
     ip_bm_size_in_blocks = le32toh(sm->sm_ip_bm_size_in_blocks);
+    (void)ip_bm_size_in_blocks;
     ip_bm_block_count = le32toh(sm->sm_ip_bm_block_count);
     ip_bm_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_bm_base);
     ip_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_base);
@@ -1127,9 +1553,12 @@ init_mount(const char *image_path, struct apfsmount *amp)
     memcpy(&amp->am_nx, nx, sizeof(*nx));
     brelse(bp, 0);
 
+    apfs_resv_init(amp);
+
     error = apfs_select_checkpoint(amp);
     if (error != 0) {
         printf("apfs_select_checkpoint failed: %d\n", error);
+        apfs_resv_destroy(amp);
         close(test_fd);
         return error;
     }
@@ -1140,6 +1569,7 @@ init_mount(const char *image_path, struct apfsmount *amp)
 static void
 cleanup_mount(struct apfsmount *amp)
 {
+    apfs_resv_destroy(amp);
     if (test_fd >= 0) {
         close(test_fd);
         test_fd = -1;
@@ -1373,6 +1803,258 @@ test_exclusion_range_helpers(void)
     assert(error == EINVAL);
 }
 
+static void
+test_sequential_batch_allocation(const char *image_path)
+{
+    struct apfsmount amp;
+    apfs_exclusion_table_t excl_table;
+    int error;
+
+    error = init_mount(image_path, &amp);
+    assert(error == 0);
+
+    error = apfs_build_container_exclusions(&amp, &excl_table);
+    assert(error == 0);
+
+    /* 1. Allocate 50 single blocks sequentially */
+    uint64_t addrs[50];
+    for (int i = 0; i < 50; i++) {
+        apfs_paddr_t paddr = 0;
+        error = apfs_resv_alloc(&amp, NULL, 1, &paddr);
+        assert(error == 0);
+        assert(paddr > 0);
+        assert(apfs_spaceman_candidate_safe(&amp, &excl_table, (uint64_t)paddr));
+        assert(apfs_resv_is_reserved(&amp, (uint64_t)paddr, 1));
+
+        /* Verify uniqueness */
+        for (int j = 0; j < i; j++) {
+            assert(addrs[j] != (uint64_t)paddr);
+        }
+        addrs[i] = (uint64_t)paddr;
+    }
+
+    assert(amp.am_resv_pool.rp_total_reserved == 50);
+
+    /* 2. Allocate multi-block spans (e.g. 4, 8, 16) */
+    apfs_paddr_t span4 = 0, span8 = 0, span16 = 0;
+    error = apfs_resv_alloc(&amp, NULL, 4, &span4);
+    assert(error == 0);
+    for (uint64_t b = 0; b < 4; b++) {
+        assert(apfs_spaceman_candidate_safe(&amp, &excl_table, (uint64_t)span4 + b));
+        for (int i = 0; i < 50; i++) {
+            assert(addrs[i] != (uint64_t)span4 + b);
+        }
+    }
+
+    error = apfs_resv_alloc(&amp, NULL, 8, &span8);
+    assert(error == 0);
+    for (uint64_t b = 0; b < 8; b++) {
+        assert(apfs_spaceman_candidate_safe(&amp, &excl_table, (uint64_t)span8 + b));
+        for (int i = 0; i < 50; i++) {
+            assert(addrs[i] != (uint64_t)span8 + b);
+        }
+        assert((uint64_t)span8 + b < (uint64_t)span4 || (uint64_t)span8 + b >= (uint64_t)span4 + 4);
+    }
+
+    error = apfs_resv_alloc(&amp, NULL, 16, &span16);
+    assert(error == 0);
+    assert(amp.am_resv_pool.rp_total_reserved == 50 + 4 + 8 + 16);
+
+    cleanup_mount(&amp);
+}
+
+typedef struct thread_worker_arg {
+    struct apfsmount *amp;
+    uint64_t tx_id;
+    int count;
+    uint64_t *out_addrs;
+} thread_worker_arg_t;
+
+static void *
+alloc_worker_thread(void *arg)
+{
+    thread_worker_arg_t *warg = (thread_worker_arg_t *)arg;
+    apfs_resv_tx_t tx;
+    tx.rt_tx_id = warg->tx_id;
+    tx.rt_count = 0;
+    LIST_INIT(&tx.rt_entries);
+
+    for (int i = 0; i < warg->count; i++) {
+        apfs_paddr_t paddr = 0;
+        int error = apfs_resv_alloc(warg->amp, &tx, 1, &paddr);
+        assert(error == 0);
+        warg->out_addrs[i] = (uint64_t)paddr;
+    }
+    return NULL;
+}
+
+static void
+test_concurrent_allocation_contention(const char *image_path)
+{
+    struct apfsmount amp;
+    int error;
+
+    error = init_mount(image_path, &amp);
+    assert(error == 0);
+
+    const int num_threads = 8;
+    const int per_thread = 25;
+    pthread_t threads[8];
+    thread_worker_arg_t args[8];
+    uint64_t thread_addrs[8][25];
+
+    for (int t = 0; t < num_threads; t++) {
+        args[t].amp = &amp;
+        args[t].tx_id = 5000 + t;
+        args[t].count = per_thread;
+        args[t].out_addrs = thread_addrs[t];
+        pthread_create(&threads[t], NULL, alloc_worker_thread, &args[t]);
+    }
+
+    for (int t = 0; t < num_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
+
+    assert(amp.am_resv_pool.rp_total_reserved == (uint64_t)(num_threads * per_thread));
+
+    /* Verify all 200 allocated blocks are mutually distinct */
+    uint64_t all_addrs[200];
+    int idx = 0;
+    for (int t = 0; t < num_threads; t++) {
+        for (int i = 0; i < per_thread; i++) {
+            uint64_t a = thread_addrs[t][i];
+            for (int k = 0; k < idx; k++) {
+                assert(all_addrs[k] != a);
+            }
+            all_addrs[idx++] = a;
+        }
+    }
+
+    cleanup_mount(&amp);
+}
+
+static void
+test_transaction_rollback_and_abort(const char *image_path)
+{
+    struct apfsmount amp;
+    int error;
+
+    error = init_mount(image_path, &amp);
+    assert(error == 0);
+
+    apfs_resv_tx_t tx;
+    tx.rt_tx_id = 999;
+    tx.rt_count = 0;
+    LIST_INIT(&tx.rt_entries);
+
+    apfs_paddr_t first_paddr = 0;
+    error = apfs_resv_alloc(&amp, &tx, 1, &first_paddr);
+    assert(error == 0);
+    assert(tx.rt_count == 1);
+    assert(amp.am_resv_pool.rp_total_reserved == 1);
+
+    for (int i = 1; i < 20; i++) {
+        apfs_paddr_t paddr = 0;
+        error = apfs_resv_alloc(&amp, &tx, 1, &paddr);
+        assert(error == 0);
+    }
+    assert(tx.rt_count == 20);
+    assert(amp.am_resv_pool.rp_total_reserved == 20);
+
+    /* Abort transaction */
+    apfs_resv_abort(&amp, &tx);
+    assert(tx.rt_count == 0);
+    assert(amp.am_resv_pool.rp_total_reserved == 0);
+    assert(!apfs_resv_is_reserved(&amp, (uint64_t)first_paddr, 1));
+
+    /* Reset roving cursor to 0 and verify candidate block is immediately re-acquired */
+    amp.am_resv_pool.rp_last_chunk = 0;
+    amp.am_resv_pool.rp_last_bit = 0;
+
+    apfs_paddr_t new_paddr = 0;
+    error = apfs_resv_alloc(&amp, NULL, 1, &new_paddr);
+    assert(error == 0);
+    assert(new_paddr == first_paddr);
+
+    cleanup_mount(&amp);
+}
+
+static void
+test_enospc_exhaustion(const char *image_path)
+{
+    struct apfsmount amp;
+    int error;
+
+    error = init_mount(image_path, &amp);
+    assert(error == 0);
+
+    apfs_resv_tx_t tx;
+    tx.rt_tx_id = 777;
+    tx.rt_count = 0;
+    LIST_INIT(&tx.rt_entries);
+
+    /* Allocate until capacity is exhausted */
+    int alloc_count = 0;
+    while (1) {
+        apfs_paddr_t paddr = 0;
+        error = apfs_resv_alloc(&amp, &tx, 64, &paddr);
+        if (error == ENOSPC) {
+            error = apfs_resv_alloc(&amp, &tx, 1, &paddr);
+            if (error == ENOSPC)
+                break;
+        }
+        assert(error == 0);
+        alloc_count++;
+        if (alloc_count > 200000) break;
+    }
+
+    assert(error == ENOSPC);
+    printf("  (exhausted capacity after reserving %llu blocks)\n",
+        (unsigned long long)amp.am_resv_pool.rp_total_reserved);
+
+    /* Abort all reservations */
+    apfs_resv_abort(&amp, &tx);
+    assert(amp.am_resv_pool.rp_total_reserved == 0);
+
+    /* Subsequent allocation succeeds */
+    apfs_paddr_t post_paddr = 0;
+    error = apfs_resv_alloc(&amp, NULL, 1, &post_paddr);
+    assert(error == 0);
+    assert(post_paddr > 0);
+
+    cleanup_mount(&amp);
+}
+
+static void
+test_resv_free_and_alloc_block(const char *image_path)
+{
+    struct apfsmount amp;
+    apfs_paddr_t paddr1 = 0, paddr2 = 0;
+    int error;
+
+    error = init_mount(image_path, &amp);
+    assert(error == 0);
+
+    error = apfs_alloc_block(&amp, &paddr1);
+    assert(error == 0);
+    error = apfs_alloc_block(&amp, &paddr2);
+    assert(error == 0);
+    assert(paddr1 != paddr2);
+    assert(amp.am_resv_pool.rp_total_reserved == 2);
+
+    error = apfs_free_block(&amp, paddr1);
+    assert(error == 0);
+    assert(!apfs_resv_is_reserved(&amp, (uint64_t)paddr1, 1));
+    assert(apfs_resv_is_reserved(&amp, (uint64_t)paddr2, 1));
+    assert(amp.am_resv_pool.rp_total_reserved == 1);
+
+    error = apfs_free_block(&amp, paddr2);
+    assert(error == 0);
+    assert(amp.am_resv_pool.rp_total_reserved == 0);
+
+    cleanup_mount(&amp);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1485,6 +2167,33 @@ main(int argc, char **argv)
     error = run_synthetic_test(mod_overlapping_checkpoint_rings);
     assert(error == EINVAL);
     printf("PASS: Overlapping checkpoint rings rejected with EINVAL\n");
+
+    /* 12. Milestone 3: In-Memory Reservation & Allocation Tests */
+    for (size_t i = 0; i < sizeof(test_images)/sizeof(test_images[0]); i++) {
+        if (access(test_images[i], F_OK) != 0)
+            continue;
+        printf("\n--- Test Case: Sequential & Multi-Block Span Reservation (%s) ---\n", test_images[i]);
+        test_sequential_batch_allocation(test_images[i]);
+        printf("PASS: Sequential and multi-block span reservation verified\n");
+
+        printf("\n--- Test Case: Concurrent Allocation Contention (%s) ---\n", test_images[i]);
+        test_concurrent_allocation_contention(test_images[i]);
+        printf("PASS: Multi-threaded concurrent allocation verified with zero duplicates\n");
+
+        printf("\n--- Test Case: Transaction Rollback and Abort (%s) ---\n", test_images[i]);
+        test_transaction_rollback_and_abort(test_images[i]);
+        printf("PASS: Transaction rollback and abort verified without leaking reservations\n");
+
+        printf("\n--- Test Case: Block Free and Wrapper Stubs (%s) ---\n", test_images[i]);
+        test_resv_free_and_alloc_block(test_images[i]);
+        printf("PASS: Block free and allocator wrapper stubs verified\n");
+    }
+
+    if (access(test_images[0], F_OK) == 0) {
+        printf("\n--- Test Case: Out-of-Space (ENOSPC) Capacity Exhaustion ---\n");
+        test_enospc_exhaustion(test_images[0]);
+        printf("PASS: Out-of-space exhaustion and recovery verified cleanly\n");
+    }
 
     printf("\n=======================================================\n");
     printf("ALL APFS SPACE MANAGER TESTS PASSED SUCCESSFULLY (100%%)\n");

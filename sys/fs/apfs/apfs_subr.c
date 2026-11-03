@@ -603,6 +603,380 @@ apfs_spaceman_candidate_safe(struct apfsmount *amp,
 }
 
 int
+apfs_resv_init(struct apfsmount *amp)
+{
+	mutex_init(&amp->am_resv_pool.rp_lock, MUTEX_DEFAULT, IPL_NONE);
+	amp->am_resv_pool.rp_total_reserved = 0;
+	amp->am_resv_pool.rp_last_chunk = 0;
+	amp->am_resv_pool.rp_last_bit = 0;
+	LIST_INIT(&amp->am_resv_pool.rp_entries);
+	return 0;
+}
+
+void
+apfs_resv_destroy(struct apfsmount *amp)
+{
+	apfs_resv_entry_t *entry, *tmp;
+
+	mutex_enter(&amp->am_resv_pool.rp_lock);
+	entry = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+	while (entry != NULL) {
+		tmp = LIST_NEXT(entry, re_link);
+		LIST_REMOVE(entry, re_link);
+		kmem_free(entry, sizeof(*entry));
+		entry = tmp;
+	}
+	amp->am_resv_pool.rp_total_reserved = 0;
+	mutex_exit(&amp->am_resv_pool.rp_lock);
+	mutex_destroy(&amp->am_resv_pool.rp_lock);
+}
+
+static bool
+apfs_resv_is_reserved_locked(struct apfsmount *amp, uint64_t paddr, uint64_t count)
+{
+	apfs_resv_entry_t *entry;
+
+	if (count == 0)
+		return false;
+
+	LIST_FOREACH(entry, &amp->am_resv_pool.rp_entries, re_link) {
+		if (apfs_range_overlaps(paddr, count,
+		    entry->re_paddr, entry->re_block_count)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool
+apfs_resv_is_reserved(struct apfsmount *amp, uint64_t paddr, uint64_t count)
+{
+	bool reserved;
+
+	mutex_enter(&amp->am_resv_pool.rp_lock);
+	reserved = apfs_resv_is_reserved_locked(amp, paddr, count);
+	mutex_exit(&amp->am_resv_pool.rp_lock);
+
+	return reserved;
+}
+
+int
+apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
+    apfs_paddr_t *paddrp)
+{
+	struct buf *smbp = NULL, *cibp = NULL, *bp = NULL;
+	spaceman_phys_t *sm;
+	spaceman_device_t *dev;
+	apfs_exclusion_table_t excl_table;
+	uint64_t block_count, chunk_count, ip_block_count;
+	uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
+	uint32_t ip_bm_block_count;
+	apfs_paddr_t spaceman_paddr, ip_base, ip_bm_base;
+	const apfs_paddr_t *cib_addrs;
+	int error;
+
+	if (count == 0 || paddrp == NULL || count > INT64_MAX)
+		return EINVAL;
+
+	*paddrp = 0;
+
+	if (le64toh(amp->am_nx.nx_spaceman_oid) == 0)
+		return EINVAL;
+
+	error = apfs_build_container_exclusions(amp, &excl_table);
+	if (error != 0)
+		return error;
+
+	error = apfs_checkpoint_lookup(amp,
+	    le64toh(amp->am_nx.nx_spaceman_oid), 0, &spaceman_paddr);
+	if (error != 0)
+		return error;
+
+	if (!apfs_spaceman_paddr_valid(amp, spaceman_paddr))
+		return EINVAL;
+
+	error = apfs_bread(amp, spaceman_paddr, &smbp);
+	if (error != 0)
+		return error;
+
+	sm = (spaceman_phys_t *)smbp->b_data;
+	if (!apfs_checksum_valid(amp, sm) ||
+	    le64toh(sm->o.o_oid) != le64toh(amp->am_nx.nx_spaceman_oid) ||
+	    le64toh(sm->o.o_xid) > amp->am_checkpoint_xid ||
+	    (le32toh(sm->o.o_type) & OBJECT_TYPE_MASK) != OBJ_SPACEMAN) {
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+
+	blocks_per_chunk = le32toh(sm->sm_blocks_per_chunk);
+	chunks_per_cib = le32toh(sm->sm_chunks_per_cib);
+	dev = &sm->sm_dev[0];
+	block_count = le64toh(dev->sm_block_count);
+	chunk_count = le64toh(dev->sm_chunk_count);
+	cib_count = le32toh(dev->sm_cib_count);
+	addr_offset = le32toh(dev->sm_addr_offset);
+
+	if (blocks_per_chunk == 0 || chunks_per_cib == 0 ||
+	    chunk_count == 0 || cib_count == 0 ||
+	    addr_offset < sizeof(*sm) || addr_offset > amp->am_block_size ||
+	    cib_count > (amp->am_block_size - addr_offset) / sizeof(apfs_paddr_t)) {
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+
+	ip_block_count = le64toh(sm->sm_ip_block_count);
+	ip_bm_block_count = le32toh(sm->sm_ip_bm_block_count);
+	ip_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_base);
+	ip_bm_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_bm_base);
+
+	if (ip_block_count > 0 &&
+	    apfs_range_valid(amp, (uint64_t)ip_base, ip_block_count)) {
+		(void)apfs_exclusion_add(amp, &excl_table, (uint64_t)ip_base,
+		    ip_block_count, "internal pool data");
+	}
+	if (ip_bm_block_count > 0 &&
+	    apfs_range_valid(amp, (uint64_t)ip_bm_base, (uint64_t)ip_bm_block_count)) {
+		(void)apfs_exclusion_add(amp, &excl_table, (uint64_t)ip_bm_base,
+		    (uint64_t)ip_bm_block_count, "internal pool bitmap");
+	}
+
+	cib_addrs = (const apfs_paddr_t *)((const uint8_t *)sm + addr_offset);
+
+	mutex_enter(&amp->am_resv_pool.rp_lock);
+
+	uint64_t start_chunk = amp->am_resv_pool.rp_last_chunk % chunk_count;
+	uint32_t start_bit = amp->am_resv_pool.rp_last_bit;
+	bool found = false;
+	uint64_t found_paddr = 0;
+
+	for (uint64_t c_offset = 0; c_offset < chunk_count && !found; c_offset++) {
+		uint64_t chunk_idx = (start_chunk + c_offset) % chunk_count;
+		uint32_t cib_idx = chunk_idx / chunks_per_cib;
+		uint32_t chunk_in_cib = chunk_idx % chunks_per_cib;
+
+		if (cib_idx >= cib_count)
+			continue;
+
+		apfs_paddr_t cib_paddr = (apfs_paddr_t)le64toh((uint64_t)cib_addrs[cib_idx]);
+		if (!apfs_spaceman_paddr_valid(amp, (uint64_t)cib_paddr))
+			continue;
+
+		error = apfs_bread(amp, cib_paddr, &cibp);
+		if (error != 0)
+			continue;
+
+		chunk_info_block_phys_t *cib = (chunk_info_block_phys_t *)cibp->b_data;
+		if (!apfs_checksum_valid(amp, cib) ||
+		    (le32toh(cib->cib_o.o_type) & OBJECT_TYPE_MASK) != OBJ_SPACEMAN_CIB) {
+			brelse(cibp, 0);
+			cibp = NULL;
+			continue;
+		}
+
+		chunk_info_phys_t *chunk = &cib->cib_chunk_info[chunk_in_cib];
+		uint32_t ci_free_count = le32toh(chunk->ci_free_count);
+		apfs_paddr_t bitmap_paddr = (apfs_paddr_t)le64toh((uint64_t)chunk->ci_bitmap_addr);
+		uint64_t chunk_start = (uint64_t)chunk_idx * blocks_per_chunk;
+		uint32_t expected_blocks = (chunk_start + blocks_per_chunk > block_count) ?
+		    (uint32_t)(block_count - chunk_start) : blocks_per_chunk;
+
+		if (ci_free_count < count || bitmap_paddr == 0 ||
+		    !apfs_spaceman_paddr_valid(amp, (uint64_t)bitmap_paddr)) {
+			brelse(cibp, 0);
+			cibp = NULL;
+			continue;
+		}
+
+		error = apfs_bread(amp, bitmap_paddr, &bp);
+		if (error != 0) {
+			brelse(cibp, 0);
+			cibp = NULL;
+			continue;
+		}
+
+		const uint8_t *bitmap = (const uint8_t *)bp->b_data;
+		uint32_t bit_start = (c_offset == 0) ? start_bit : 0;
+		if (bit_start >= expected_blocks)
+			bit_start = 0;
+
+		/* Scan from bit_start to end of chunk */
+		for (uint32_t bit = bit_start; bit + count <= expected_blocks; bit++) {
+			bool run_ok = true;
+			for (uint64_t k = 0; k < count; k++) {
+				uint32_t b = bit + (uint32_t)k;
+				uint64_t blk = chunk_start + b;
+
+				/* Clear bit (0 = free) */
+				if ((bitmap[b >> 3] & (1U << (b & 7))) != 0) {
+					run_ok = false;
+					bit = b;
+					break;
+				}
+				if (!apfs_spaceman_candidate_safe(amp, &excl_table, blk)) {
+					run_ok = false;
+					break;
+				}
+				if (apfs_resv_is_reserved_locked(amp, blk, 1)) {
+					run_ok = false;
+					break;
+				}
+			}
+
+			if (run_ok) {
+				found_paddr = chunk_start + bit;
+				amp->am_resv_pool.rp_last_chunk = chunk_idx;
+				amp->am_resv_pool.rp_last_bit = bit + (uint32_t)count;
+				found = true;
+				break;
+			}
+		}
+
+		/* If not found on start_chunk, check [0, bit_start) */
+		if (!found && c_offset == 0 && bit_start > 0) {
+			for (uint32_t bit = 0; bit + count <= bit_start && bit + count <= expected_blocks; bit++) {
+				bool run_ok = true;
+				for (uint64_t k = 0; k < count; k++) {
+					uint32_t b = bit + (uint32_t)k;
+					uint64_t blk = chunk_start + b;
+
+					if ((bitmap[b >> 3] & (1U << (b & 7))) != 0) {
+						run_ok = false;
+						bit = b;
+						break;
+					}
+					if (!apfs_spaceman_candidate_safe(amp, &excl_table, blk)) {
+						run_ok = false;
+						break;
+					}
+					if (apfs_resv_is_reserved_locked(amp, blk, 1)) {
+						run_ok = false;
+						break;
+					}
+				}
+
+				if (run_ok) {
+					found_paddr = chunk_start + bit;
+					amp->am_resv_pool.rp_last_chunk = chunk_idx;
+					amp->am_resv_pool.rp_last_bit = bit + (uint32_t)count;
+					found = true;
+					break;
+				}
+			}
+		}
+
+		brelse(bp, 0);
+		bp = NULL;
+		brelse(cibp, 0);
+		cibp = NULL;
+	}
+
+	brelse(smbp, 0);
+	smbp = NULL;
+
+	if (!found) {
+		mutex_exit(&amp->am_resv_pool.rp_lock);
+		return ENOSPC;
+	}
+
+	/* Allocate global reservation entry */
+	apfs_resv_entry_t *pool_entry = kmem_zalloc(sizeof(*pool_entry), KM_SLEEP);
+	pool_entry->re_paddr = found_paddr;
+	pool_entry->re_block_count = count;
+	pool_entry->re_tx_id = (tx != NULL) ? tx->rt_tx_id : 0;
+	LIST_INSERT_HEAD(&amp->am_resv_pool.rp_entries, pool_entry, re_link);
+	amp->am_resv_pool.rp_total_reserved += count;
+
+	/* If a transaction context was provided, track it in the tx handle */
+	if (tx != NULL) {
+		apfs_resv_entry_t *tx_entry = kmem_zalloc(sizeof(*tx_entry), KM_SLEEP);
+		tx_entry->re_paddr = found_paddr;
+		tx_entry->re_block_count = count;
+		tx_entry->re_tx_id = tx->rt_tx_id;
+		LIST_INSERT_HEAD(&tx->rt_entries, tx_entry, re_link);
+		tx->rt_count += count;
+	}
+
+	mutex_exit(&amp->am_resv_pool.rp_lock);
+
+	*paddrp = (apfs_paddr_t)found_paddr;
+	return 0;
+}
+
+void
+apfs_resv_abort(struct apfsmount *amp, apfs_resv_tx_t *tx)
+{
+	apfs_resv_entry_t *tx_entry, *tx_tmp;
+
+	if (tx == NULL)
+		return;
+
+	mutex_enter(&amp->am_resv_pool.rp_lock);
+	tx_entry = LIST_FIRST(&tx->rt_entries);
+	while (tx_entry != NULL) {
+		tx_tmp = LIST_NEXT(tx_entry, re_link);
+
+		/* Find and remove matching reservation from global pool */
+		apfs_resv_entry_t *p_entry, *p_tmp;
+		p_entry = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+		while (p_entry != NULL) {
+			p_tmp = LIST_NEXT(p_entry, re_link);
+			if (p_entry->re_paddr == tx_entry->re_paddr &&
+			    p_entry->re_block_count == tx_entry->re_block_count) {
+				LIST_REMOVE(p_entry, re_link);
+				if (amp->am_resv_pool.rp_total_reserved >= p_entry->re_block_count)
+					amp->am_resv_pool.rp_total_reserved -= p_entry->re_block_count;
+				else
+					amp->am_resv_pool.rp_total_reserved = 0;
+				kmem_free(p_entry, sizeof(*p_entry));
+				break;
+			}
+			p_entry = p_tmp;
+		}
+
+		LIST_REMOVE(tx_entry, re_link);
+		kmem_free(tx_entry, sizeof(*tx_entry));
+		tx_entry = tx_tmp;
+	}
+	tx->rt_count = 0;
+	mutex_exit(&amp->am_resv_pool.rp_lock);
+}
+
+void
+apfs_resv_free(struct apfsmount *amp, apfs_paddr_t paddr, uint64_t count)
+{
+	apfs_resv_entry_t *entry, *tmp;
+
+	if (count == 0 || paddr < 0)
+		return;
+
+	mutex_enter(&amp->am_resv_pool.rp_lock);
+	entry = LIST_FIRST(&amp->am_resv_pool.rp_entries);
+	while (entry != NULL) {
+		tmp = LIST_NEXT(entry, re_link);
+		if (entry->re_paddr == (uint64_t)paddr &&
+		    entry->re_block_count == count) {
+			LIST_REMOVE(entry, re_link);
+			if (amp->am_resv_pool.rp_total_reserved >= count)
+				amp->am_resv_pool.rp_total_reserved -= count;
+			else
+				amp->am_resv_pool.rp_total_reserved = 0;
+			kmem_free(entry, sizeof(*entry));
+			break;
+		} else if (entry->re_paddr == (uint64_t)paddr && entry->re_block_count > count) {
+			entry->re_paddr += count;
+			entry->re_block_count -= count;
+			if (amp->am_resv_pool.rp_total_reserved >= count)
+				amp->am_resv_pool.rp_total_reserved -= count;
+			else
+				amp->am_resv_pool.rp_total_reserved = 0;
+			break;
+		}
+		entry = tmp;
+	}
+	mutex_exit(&amp->am_resv_pool.rp_lock);
+}
+
+int
 apfs_validate_spaceman(struct apfsmount *amp)
 {
 	struct buf *smbp, *cibp;
@@ -2057,21 +2431,12 @@ apfs_btree_insert(struct apfsmount *amp, oid_t *tree_oid, void *key, void *val)
 int
 apfs_alloc_block(struct apfsmount *amp, apfs_paddr_t *paddrp)
 {
-    mutex_enter(&amp->am_lock);
-    /* 
-     * 1. Read Space Manager (spaceman) object.
-     * 2. Search free-queue or bitmap for a free block.
-     * 3. Mark block as used.
-     * 4. Update spaceman counters.
-     * 5. COW the spaceman object and its B-trees.
-     */
-    *paddrp = amp->am_nx.nx_xp_data_base + (amp->am_sb.apfs_fs_alloc_count++);
-    mutex_exit(&amp->am_lock);
-    return 0;
+	return apfs_resv_alloc(amp, NULL, 1, paddrp);
 }
 
 int
 apfs_free_block(struct apfsmount *amp, apfs_paddr_t paddr)
 {
-    return 0;
+	apfs_resv_free(amp, paddr, 1);
+	return 0;
 }

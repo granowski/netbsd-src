@@ -304,6 +304,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	amp->am_block_shift = ffs(amp->am_block_size) - 1;
 	memcpy(&amp->am_nx, nx, sizeof(*nx));
 	mutex_init(&amp->am_lock, MUTEX_DEFAULT, IPL_NONE);
+	apfs_resv_init(amp);
 
 	brelse(bp, 0);
 
@@ -312,6 +313,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	if (error != 0) {
 		printf("apfs_mount: could not find a valid container checkpoint: "
 		    "error %d\n", error);
+		apfs_resv_destroy(amp);
 		mutex_destroy(&amp->am_lock);
 		kmem_free(amp, sizeof(*amp));
 		goto error_close;
@@ -475,6 +477,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	if (error) {
 		printf("apfs_mount: could not locate a valid volume superblock: "
 		    "error %d\n", error);
+		apfs_resv_destroy(amp);
 		mutex_destroy(&amp->am_lock);
 		kmem_free(amp, sizeof(*amp));
 		goto error_close;
@@ -491,6 +494,7 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	error = set_statvfs_info(path, UIO_USERSPACE, args->fspec, UIO_USERSPACE,
 	    mp->mnt_op->vfs_name, mp, l);
 	if (error) {
+		apfs_resv_destroy(amp);
 		mutex_destroy(&amp->am_lock);
 		kmem_free(amp, sizeof(*amp));
 		mp->mnt_data = NULL;
@@ -532,6 +536,7 @@ apfs_unmount(struct mount *mp, int mntflags)
 	VOP_UNLOCK(amp->am_devvp);
 
 	vrele(amp->am_devvp);
+	apfs_resv_destroy(amp);
 	mutex_destroy(&amp->am_lock);
 	kmem_free(amp, sizeof(*amp));
 	mp->mnt_data = NULL;

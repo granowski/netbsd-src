@@ -20,10 +20,11 @@ The key principle is **don't enable writes until allocation, copy-on-write metad
 
 ## Immediate next step
 
-**Milestones 1 & 2** are complete:
+**Milestones 1, 2, & 3** are complete:
 - **Milestone 1 (Confirm Space Manager decoding):** Space Manager decoding, CIB traversal, free counts, LSB-first bit ordering, and bitmap polarity (clear bits `0` = free, set bits `1` = allocated) have been cross-validated across multiple test images against an independent APFS reference tool.
 - **Milestone 2 (Complete read-only allocation validation):** Container fixed exclusion zones (Superblock, Checkpoint Descriptor ring, Checkpoint Data ring, Blocked Out prange), internal pool metadata (`sm_ip_*`), filesystem reserves (`sm_fs_reserve_*`), and free queues (`sm_fq[0..2]`) are audited and validated. Candidate free blocks are strictly filtered against exclusion ranges, and all invalid or overlapping configurations fail closed cleanly.
+- **Milestone 3 (Add an in-memory reservation model):** Concurrency-safe in-memory reservation data structures (`apfs_resv_pool_t`, `apfs_resv_entry_t`, `apfs_resv_tx_t`), roving cursor bitmap candidate scanning, transaction tracking, instant rollback on abort (`apfs_resv_abort`), and selective de-reservation (`apfs_resv_free`) are implemented and validated. Multi-threaded stress tests show zero duplicate candidate allocations, and disk images remain 100% byte-for-byte identical (SHA-256 verified).
 
-The next actionable item is **Milestone 3**: Add an in-memory reservation model (candidate block selection for the supported scope, serializing reservations across operations, per-transaction tracking, and release on abort).
+The next actionable item is **Milestone 4**: Build transaction and copy-on-write I/O foundations (define transaction state and abort behavior, write new blocks rather than overwriting live metadata, assign valid object IDs and transaction IDs, calculate checksums, and order writes and flushes according to APFS checkpoint rules).
 
 Until Milestones 4–6 are complete and validated, keep the filesystem forced read-only. The current allocator and B-tree insertion routines are still placeholders; connecting them to the write path before those foundations exist could corrupt the volume.
