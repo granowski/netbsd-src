@@ -53,7 +53,7 @@ const struct vnodeopv_desc * const apfs_vnodeopv_descs[] = {
 	NULL,
 };
 
-static int
+int
 apfs_name_hash(const char *name, size_t len, bool case_insensitive,
     bool normalization_insensitive, uint32_t *hashp)
 {
@@ -476,13 +476,12 @@ apfs_vop_write(void *v)
 		j_extent_key_t ext_key;
 		j_phys_ext_val_t ext_val;
 
-		ext_key.hdr.obj_id_and_type = htole64((apnode->a_oid & OBJ_ID_MASK) |
+		ext_key.obj_id_and_type = htole64((apnode->a_oid & OBJ_ID_MASK) |
 		    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
 		ext_key.logical_addr = htole64((uint64_t)(offset - off_in_block));
 
-		ext_val.len_and_flags = htole64(amp->am_block_size & J_EXT_LEN_MASK);
-		ext_val.phys_block_num = htole64((uint64_t)paddr);
-		ext_val.crypto_id = 0;
+		ext_val.len_and_flags = htole64(amp->am_block_size & EXTENT_LEN_MASK);
+		ext_val.phys_addr = htole64((uint64_t)paddr);
 
 		oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
 		oid_t omap_oid = le64toh(amp->am_sb.apfs_omap_oid);

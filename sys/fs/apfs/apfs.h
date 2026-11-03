@@ -486,6 +486,8 @@ typedef struct btree_index_node_val {
 
 /* NetBSD Internal Structures */
 
+#define APFS_BTREE_MAX_DEPTH 16
+
 struct apfs_args {
 	char *fspec;		/* block special device to mount */
 };
@@ -536,8 +538,8 @@ typedef enum {
 } apfs_tx_state_t;
 
 /* Maximum ephemeral mappings per checkpoint transaction */
-#define APFS_TX_MAX_MAPPINGS 128
-#define APFS_TX_MAX_FREES    128
+#define APFS_TX_MAX_MAPPINGS 16
+#define APFS_TX_MAX_FREES    16
 
 typedef struct apfs_free_span {
     apfs_paddr_t    fs_paddr;
@@ -599,6 +601,8 @@ int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_bt
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_insert_record(apfs_tx_t *, oid_t, oid_t *, const void *, size_t, const void *, size_t);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
+int apfs_btree_remove_record(apfs_tx_t *, oid_t, oid_t *, const void *, size_t);
+int apfs_name_hash(const char *, size_t, bool, bool, uint32_t *);
 int apfs_bread(struct apfsmount *, apfs_paddr_t, struct buf **);
 int apfs_getblk(struct apfsmount *, apfs_paddr_t, struct buf **);
 int apfs_bwrite(struct apfsmount *, apfs_paddr_t, struct buf *);

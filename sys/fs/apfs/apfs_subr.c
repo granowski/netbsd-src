@@ -6,7 +6,9 @@
 #include <sys/buf.h>
 #include <sys/kmem.h>
 #include <sys/sha2.h>
+#include <sys/dirent.h>
 #include <fs/apfs/apfs.h>
+#include <fs/apfs/apfs_unicode.h>
 
 int
 apfs_hash_data(struct apfsmount *amp, const void *data, size_t len,
@@ -1072,7 +1074,7 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	uint64_t active_fq_entries = 0;
 	uint32_t first_clear_bit = 0, first_set_bit = 0;
 	uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
-	uint32_t struct_size, ip_bm_size_in_blocks, ip_bm_block_count;
+	uint32_t struct_size, ip_bm_block_count;
 	apfs_paddr_t ip_bm_base, ip_base;
 	int free_bit_value = -1;
 	bool have_clear_candidate = false, have_set_candidate = false;
@@ -1193,7 +1195,6 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	}
 
 	ip_block_count = le64toh(sm->sm_ip_block_count);
-	ip_bm_size_in_blocks = le32toh(sm->sm_ip_bm_size_in_blocks);
 	ip_bm_block_count = le32toh(sm->sm_ip_bm_block_count);
 	ip_bm_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_bm_base);
 	ip_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_base);
@@ -2252,7 +2253,6 @@ apfs_btree_iterate(struct apfsmount *amp, oid_t omap_oid, oid_t tree_oid, void *
 		bool have_expected_hash;
 		uint8_t expected_hash[BTREE_NODE_HASH_SIZE_MAX];
 	};
-	enum { APFS_BTREE_MAX_DEPTH = 64 };
 	struct apfs_btree_iter_frame *stack;
 	struct buf *bp;
 	btree_node_phys_t *node;
@@ -2556,8 +2556,8 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 					return error;
 				}
 				uint32_t subtype = (tree_flags & BTREE_HASHED) ? APFS_TYPE_ANY :
-				    ((flags & BTNODE_FIXED_KV_SIZE) ? 0 : APFS_TYPE_ANY);
-				if (apfs_btree_cmp(key, k_ptr, subtype) <= 0) {
+				    ((flags & BTNODE_FIXED_KV_SIZE) ? OBJ_OMAP : OBJ_FSTREE);
+				if (apfs_key_compare(subtype, key, key_len, k_ptr, k_len) <= 0) {
 					ins_idx = i;
 					break;
 				}
@@ -2578,7 +2578,8 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 				brelse(bp, 0);
 				return error;
 			}
-			if (apfs_btree_cmp(key, k_ptr, APFS_TYPE_ANY) >= 0)
+			uint32_t subtype = (flags & BTNODE_FIXED_KV_SIZE) ? OBJ_OMAP : OBJ_FSTREE;
+			if (apfs_key_compare(subtype, key, key_len, k_ptr, k_len) >= 0)
 				child_idx = i;
 			else
 				break;
@@ -2844,7 +2845,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			/* Leaf node found: search for matching key */
 			uint32_t del_idx = nkeys;
 			uint32_t subtype = (tree_flags & BTREE_HASHED) ? APFS_TYPE_ANY :
-			    ((flags & BTNODE_FIXED_KV_SIZE) ? 0 : APFS_TYPE_ANY);
+			    ((flags & BTNODE_FIXED_KV_SIZE) ? OBJ_OMAP : OBJ_FSTREE);
 
 			for (uint32_t i = 0; i < nkeys; i++) {
 				const void *k_ptr, *v_ptr;
@@ -2854,7 +2855,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 					brelse(bp, 0);
 					return error;
 				}
-				if (apfs_btree_cmp(key, k_ptr, subtype) == 0) {
+				if (apfs_key_compare(subtype, key, key_len, k_ptr, k_len) == 0) {
 					del_idx = i;
 					break;
 				}
@@ -2879,7 +2880,8 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 				brelse(bp, 0);
 				return error;
 			}
-			if (apfs_btree_cmp(key, k_ptr, APFS_TYPE_ANY) >= 0)
+			uint32_t subtype = (flags & BTNODE_FIXED_KV_SIZE) ? OBJ_OMAP : OBJ_FSTREE;
+			if (apfs_key_compare(subtype, key, key_len, k_ptr, k_len) >= 0)
 				child_idx = i;
 			else
 				break;
@@ -3278,7 +3280,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 		uint32_t     cm_alloc_count;
 		uint32_t     cm_free_count;
 		uint8_t     *cm_bitmap;
-	} chunks[APFS_TX_UPDATE_MAX_CHUNKS];
+	} *chunks = NULL;
 	uint32_t num_chunks = 0;
 
 	struct cib_mod {
@@ -3286,11 +3288,11 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 		apfs_paddr_t             cibm_old_paddr;
 		apfs_paddr_t             cibm_new_paddr;
 		chunk_info_block_phys_t *cibm_data;
-	} cibs[APFS_TX_UPDATE_MAX_CIBS];
+	} *cibs = NULL;
 	uint32_t num_cibs = 0;
 
-	memset(chunks, 0, sizeof(chunks));
-	memset(cibs, 0, sizeof(cibs));
+	chunks = kmem_zalloc(sizeof(*chunks) * APFS_TX_UPDATE_MAX_CHUNKS, KM_SLEEP);
+	cibs = kmem_zalloc(sizeof(*cibs) * APFS_TX_UPDATE_MAX_CIBS, KM_SLEEP);
 
 	bool new_allocs = true;
 
@@ -3587,13 +3589,19 @@ out:
 		brelse(smbp, 0);
 	if (new_sm != NULL)
 		kmem_free(new_sm, amp->am_block_size);
-	for (uint32_t i = 0; i < num_chunks; i++) {
-		if (chunks[i].cm_bitmap != NULL)
-			kmem_free(chunks[i].cm_bitmap, amp->am_block_size);
+	if (chunks != NULL) {
+		for (uint32_t i = 0; i < num_chunks; i++) {
+			if (chunks[i].cm_bitmap != NULL)
+				kmem_free(chunks[i].cm_bitmap, amp->am_block_size);
+		}
+		kmem_free(chunks, sizeof(*chunks) * APFS_TX_UPDATE_MAX_CHUNKS);
 	}
-	for (uint32_t j = 0; j < num_cibs; j++) {
-		if (cibs[j].cibm_data != NULL)
-			kmem_free(cibs[j].cibm_data, amp->am_block_size);
+	if (cibs != NULL) {
+		for (uint32_t j = 0; j < num_cibs; j++) {
+			if (cibs[j].cibm_data != NULL)
+				kmem_free(cibs[j].cibm_data, amp->am_block_size);
+		}
+		kmem_free(cibs, sizeof(*cibs) * APFS_TX_UPDATE_MAX_CIBS);
 	}
 
 	return error;
@@ -3753,10 +3761,18 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	apfs_tx_t tx;
 	oid_t new_ino_oid;
 	uint32_t name_len = strlen(name);
-	uint32_t name_hash = apfs_name_hash(name, name_len);
+	uint64_t incompat_features = le64toh(amp->am_sb.apfs_incompatible_features);
+	uint32_t name_hash = 0;
 	struct timespec ts;
 	uint64_t now_ns;
 	int error;
+
+	error = apfs_name_hash(name, name_len,
+	    (incompat_features & APFS_INCOMPAT_CASE_INSENSITIVE) != 0,
+	    (incompat_features & APFS_INCOMPAT_NORMALIZATION_INSENSITIVE) != 0,
+	    &name_hash);
+	if (error != 0)
+		return error;
 
 	nanotime(&ts);
 	now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
@@ -3782,11 +3798,11 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	ino_val.change_time = htole64(now_ns);
 	ino_val.access_time = htole64(now_ns);
 	ino_val.internal_flags = htole64(0);
-	ino_val.nchildren_or_nlink = htole32(1);
+	ino_val.nlink = htole32(1);
 	ino_val.bsd_flags = 0;
 	ino_val.owner = htole32(uid);
 	ino_val.group = htole32(gid);
-	ino_val.mode = htole16(mode | S_IFREG);
+	ino_val.mode = htole16((mode & 07777) | S_IFREG);
 	ino_val.uncompressed_size = 0;
 
 	oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
@@ -3800,9 +3816,9 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	}
 
 	/* 2. Directory Entry Record */
-	size_t drec_key_size = sizeof(j_drec_hashed_key_t) + name_len + 1;
-	j_drec_hashed_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
-	drec_key->hdr.obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
+	size_t drec_key_size = sizeof(j_drec_key_t) + name_len + 1;
+	j_drec_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
+	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
 	    (name_len & DREC_NLEN_MASK));
@@ -3855,13 +3871,12 @@ apfs_write_file_extent(struct apfsmount *amp, oid_t ino_oid, uint64_t file_offse
 	root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
 	omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
 
-	ext_key.hdr.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
+	ext_key.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
 	ext_key.logical_addr = htole64(file_offset);
 
-	ext_val.len_and_flags = htole64(length & J_EXT_LEN_MASK);
-	ext_val.phys_block_num = htole64((uint64_t)paddr);
-	ext_val.crypto_id = 0;
+	ext_val.len_and_flags = htole64(length & EXTENT_LEN_MASK);
+	ext_val.phys_addr = htole64((uint64_t)paddr);
 
 	error = apfs_btree_insert_record(&tx, omap_oid, &root_tree_oid,
 	    &ext_key, sizeof(ext_key), &ext_val, sizeof(ext_val));
@@ -3901,7 +3916,7 @@ apfs_remove_file_extents(apfs_tx_t *tx, oid_t ino_oid, oid_t *root_tree_oid)
 	SLIST_HEAD(, apfs_extent_list_entry) head = SLIST_HEAD_INITIALIZER(head);
 	j_extent_key_t start_key;
 	memset(&start_key, 0, sizeof(start_key));
-	start_key.hdr.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
+	start_key.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
 
 	apfs_btree_iterate(amp, omap_oid, *root_tree_oid, &start_key, sizeof(start_key),
@@ -3912,11 +3927,11 @@ apfs_remove_file_extents(apfs_tx_t *tx, oid_t ino_oid, oid_t *root_tree_oid)
 		entry = SLIST_FIRST(&head);
 		SLIST_REMOVE_HEAD(&head, link);
 
-		uint64_t kw = le64toh(entry->key.hdr.obj_id_and_type);
+		uint64_t kw = le64toh(entry->key.obj_id_and_type);
 		if ((kw & OBJ_ID_MASK) == (ino_oid & OBJ_ID_MASK) &&
 		    ((kw & OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT) == APFS_TYPE_EXTENT) {
-			uint64_t phys_block = le64toh(entry->val.phys_block_num);
-			uint64_t len = le64toh(entry->val.len_and_flags) & J_EXT_LEN_MASK;
+			uint64_t phys_block = le64toh(entry->val.phys_addr);
+			uint64_t len = le64toh(entry->val.len_and_flags) & EXTENT_LEN_MASK;
 			uint64_t count = (len + amp->am_block_size - 1) / amp->am_block_size;
 
 			apfs_free_queue_add(tx, (apfs_paddr_t)phys_block, count);
@@ -3936,7 +3951,7 @@ apfs_truncate_file_extents(apfs_tx_t *tx, oid_t ino_oid, uint64_t new_size, oid_
 	SLIST_HEAD(, apfs_extent_list_entry) head = SLIST_HEAD_INITIALIZER(head);
 	j_extent_key_t start_key;
 	memset(&start_key, 0, sizeof(start_key));
-	start_key.hdr.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
+	start_key.obj_id_and_type = htole64((ino_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
 
 	apfs_btree_iterate(amp, omap_oid, *root_tree_oid, &start_key, sizeof(start_key),
@@ -3947,12 +3962,12 @@ apfs_truncate_file_extents(apfs_tx_t *tx, oid_t ino_oid, uint64_t new_size, oid_
 		entry = SLIST_FIRST(&head);
 		SLIST_REMOVE_HEAD(&head, link);
 
-		uint64_t kw = le64toh(entry->key.hdr.obj_id_and_type);
+		uint64_t kw = le64toh(entry->key.obj_id_and_type);
 		if ((kw & OBJ_ID_MASK) == (ino_oid & OBJ_ID_MASK) &&
 		    ((kw & OBJ_TYPE_MASK) >> OBJ_TYPE_SHIFT) == APFS_TYPE_EXTENT) {
 			uint64_t logical_addr = le64toh(entry->key.logical_addr);
-			uint64_t phys_block = le64toh(entry->val.phys_block_num);
-			uint64_t len = le64toh(entry->val.len_and_flags) & J_EXT_LEN_MASK;
+			uint64_t phys_block = le64toh(entry->val.phys_addr);
+			uint64_t len = le64toh(entry->val.len_and_flags) & EXTENT_LEN_MASK;
 
 			if (logical_addr >= new_size) {
 				uint64_t count = (len + amp->am_block_size - 1) / amp->am_block_size;
@@ -3967,7 +3982,7 @@ apfs_truncate_file_extents(apfs_tx_t *tx, oid_t ino_oid, uint64_t new_size, oid_
 					apfs_free_queue_add(tx, (apfs_paddr_t)(phys_block + keep_blocks),
 					    total_blocks - keep_blocks);
 				}
-				entry->val.len_and_flags = htole64(keep_len & J_EXT_LEN_MASK);
+				entry->val.len_and_flags = htole64(keep_len & EXTENT_LEN_MASK);
 				apfs_btree_insert_record(tx, omap_oid, root_tree_oid,
 				    &entry->key, sizeof(entry->key), &entry->val, sizeof(entry->val));
 			}
@@ -3984,10 +3999,18 @@ apfs_create_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	apfs_tx_t tx;
 	oid_t new_ino_oid;
 	uint32_t name_len = strlen(name);
-	uint32_t name_hash = apfs_name_hash(name, name_len);
+	uint64_t incompat_features = le64toh(amp->am_sb.apfs_incompatible_features);
+	uint32_t name_hash = 0;
 	struct timespec ts;
 	uint64_t now_ns;
 	int error;
+
+	error = apfs_name_hash(name, name_len,
+	    (incompat_features & APFS_INCOMPAT_CASE_INSENSITIVE) != 0,
+	    (incompat_features & APFS_INCOMPAT_NORMALIZATION_INSENSITIVE) != 0,
+	    &name_hash);
+	if (error != 0)
+		return error;
 
 	nanotime(&ts);
 	now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
@@ -4013,7 +4036,7 @@ apfs_create_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	ino_val.change_time = htole64(now_ns);
 	ino_val.access_time = htole64(now_ns);
 	ino_val.internal_flags = htole64(0);
-	ino_val.nchildren_or_nlink = htole32(2);
+	ino_val.nchildren = htole32(2);
 	ino_val.bsd_flags = 0;
 	ino_val.owner = htole32(uid);
 	ino_val.group = htole32(gid);
@@ -4031,9 +4054,9 @@ apfs_create_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	}
 
 	/* 2. Directory Entry Record */
-	size_t drec_key_size = sizeof(j_drec_hashed_key_t) + name_len + 1;
-	j_drec_hashed_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
-	drec_key->hdr.obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
+	size_t drec_key_size = sizeof(j_drec_key_t) + name_len + 1;
+	j_drec_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
+	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
 	    (name_len & DREC_NLEN_MASK));
@@ -4096,11 +4119,19 @@ apfs_remove_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	apfs_tx_t tx;
 	oid_t root_tree_oid, omap_oid;
 	uint32_t name_len = strlen(name);
-	uint32_t name_hash = apfs_name_hash(name, name_len);
+	uint64_t incompat_features = le64toh(amp->am_sb.apfs_incompatible_features);
+	uint32_t name_hash = 0;
 	int error;
 
 	if (amp == NULL)
 		return EINVAL;
+
+	error = apfs_name_hash(name, name_len,
+	    (incompat_features & APFS_INCOMPAT_CASE_INSENSITIVE) != 0,
+	    (incompat_features & APFS_INCOMPAT_NORMALIZATION_INSENSITIVE) != 0,
+	    &name_hash);
+	if (error != 0)
+		return error;
 
 	root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
 	omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
@@ -4122,9 +4153,9 @@ apfs_remove_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 		return error;
 
 	/* 1. Remove directory entry in parent */
-	size_t drec_key_size = sizeof(j_drec_hashed_key_t) + name_len + 1;
-	j_drec_hashed_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
-	drec_key->hdr.obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
+	size_t drec_key_size = sizeof(j_drec_key_t) + name_len + 1;
+	j_drec_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
+	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
 	    (name_len & DREC_NLEN_MASK));
@@ -4165,11 +4196,19 @@ apfs_remove_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	apfs_tx_t tx;
 	oid_t root_tree_oid, omap_oid;
 	uint32_t name_len = strlen(name);
-	uint32_t name_hash = apfs_name_hash(name, name_len);
+	uint64_t incompat_features = le64toh(amp->am_sb.apfs_incompatible_features);
+	uint32_t name_hash = 0;
 	int error;
 
 	if (amp == NULL)
 		return EINVAL;
+
+	error = apfs_name_hash(name, name_len,
+	    (incompat_features & APFS_INCOMPAT_CASE_INSENSITIVE) != 0,
+	    (incompat_features & APFS_INCOMPAT_NORMALIZATION_INSENSITIVE) != 0,
+	    &name_hash);
+	if (error != 0)
+		return error;
 
 	error = apfs_tx_begin(amp, &tx);
 	if (error != 0)
@@ -4179,9 +4218,9 @@ apfs_remove_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
 
 	/* 1. Remove parent directory entry */
-	size_t drec_key_size = sizeof(j_drec_hashed_key_t) + name_len + 1;
-	j_drec_hashed_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
-	drec_key->hdr.obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
+	size_t drec_key_size = sizeof(j_drec_key_t) + name_len + 1;
+	j_drec_key_t *drec_key = kmem_zalloc(drec_key_size, KM_SLEEP);
+	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
 	    (name_len & DREC_NLEN_MASK));
@@ -4207,7 +4246,7 @@ apfs_remove_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	    &ino_key, sizeof(ino_key), ino_buf, amp->am_block_size, NULL, 0, &ino_len);
 	if (error == 0 && ino_len >= sizeof(j_inode_val_t)) {
 		j_inode_val_t *ino_val = (j_inode_val_t *)ino_buf;
-		uint32_t nlink = le32toh(ino_val->nchildren_or_nlink);
+		uint32_t nlink = le32toh(ino_val->nlink);
 		if (nlink <= 1) {
 			apfs_btree_remove_record(&tx, omap_oid, &root_tree_oid,
 			    &ino_key, sizeof(ino_key));
@@ -4216,7 +4255,7 @@ apfs_remove_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 			if (num_files > 0)
 				amp->am_sb.apfs_num_files = htole64(num_files - 1);
 		} else {
-			ino_val->nchildren_or_nlink = htole32(nlink - 1);
+			ino_val->nlink = htole32(nlink - 1);
 			apfs_btree_insert_record(&tx, omap_oid, &root_tree_oid,
 			    &ino_key, sizeof(ino_key), ino_val, ino_len);
 		}
@@ -4268,7 +4307,7 @@ apfs_truncate_file(struct apfsmount *amp, struct apfsnode *apnode, uint64_t new_
 	ino_val.change_time = htole64(now_ns);
 	ino_val.access_time = htole64(apnode->a_ino.access_time);
 	ino_val.internal_flags = htole64(apnode->a_ino.internal_flags);
-	ino_val.nchildren_or_nlink = htole32(apnode->a_ino.nlink);
+	ino_val.nlink = htole32(apnode->a_ino.nlink);
 	ino_val.bsd_flags = htole32(apnode->a_ino.bsd_flags);
 	ino_val.owner = htole32(apnode->a_ino.owner);
 	ino_val.group = htole32(apnode->a_ino.group);
