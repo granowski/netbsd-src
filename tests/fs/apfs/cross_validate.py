@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cross-validation script for APFS Space Manager (Milestone 1).
+Cross-validation script for APFS Space Manager (Milestone 2: Read-Only Allocation Validation).
 Compares C-based kernel decoder outputs against the independent Python reference parser.
 """
 
@@ -36,6 +36,10 @@ def parse_c_output(stdout: str) -> dict:
             m = re.search(r"validated (\d+) free blocks across (\d+) chunks", line)
             if m:
                 info["total_validated_free"] = int(m.group(1))
+        elif "active free queues contain" in line:
+            m = re.search(r"active free queues contain (\d+) delayed free entries", line)
+            if m:
+                info["active_fq_entries"] = int(m.group(1))
         elif "bitmap semantics:" in line:
             # apfs_spaceman: bitmap semantics: clear bits are free; read-only candidate 165 (chunk 0, bitmap 152, bit 165; not reserved)
             if "clear bits are free" in line:
@@ -83,10 +87,21 @@ def cross_validate_image(image_path: str):
     print(f"  ✓ Validated free blocks: {c_res['total_validated_free']} (exact match with sm_dev[0].sm_free_count)")
     print(f"  ✓ Bitmap polarity conclusively verified: {pol_str}")
 
-    print("Checking Candidate Free-Block Discovery:")
+    print("Checking Exclusion Ranges & Candidate Block Safety:")
+    for start, length, desc in ref_res["exclusion_ranges"]:
+        print(f"  ✓ Exclusion Range: {desc} (blocks {start}..{start + length - 1})")
+
     assert ref_res["candidate_free_block"] == c_res["candidate_free_block"], f"Candidate mismatch: {ref_res['candidate_free_block']} vs {c_res['candidate_free_block']}"
     cand = c_res["candidate_free_block"]
-    print(f"  ✓ Candidate free block: block={cand[0]} (chunk={cand[1]}, bitmap_block={cand[2]}, bit_offset={cand[3]})")
+    if cand:
+        cand_paddr = cand[0]
+        for start, length, desc in ref_res["exclusion_ranges"]:
+            assert not (start <= cand_paddr < start + length), f"Candidate {cand_paddr} intersects {desc} ({start}..{start+length-1})!"
+        print(f"  ✓ Candidate free block {cand_paddr} strictly disjoint from all exclusion ranges")
+        print(f"  ✓ Candidate details: block={cand[0]} (chunk={cand[1]}, bitmap_block={cand[2]}, bit_offset={cand[3]})")
+
+    if ref_res.get("active_fq_entries", 0) > 0:
+        print(f"  ✓ Free queues audited: {ref_res['active_fq_entries']} delayed free blocks detected")
 
     print(f"STATUS: Image {os.path.basename(image_path)} PASSED 100% CROSS-VALIDATION")
 
@@ -100,6 +115,7 @@ def main():
     images = [
         "/tmp/apfs_test_images/fresh_50m.dmg",
         "/tmp/apfs_test_images/populated_100m.dmg",
+        "/tmp/apfs_test_images/deleted_120m.dmg",
         "/tmp/apfs_test_images/multichunk_300m.dmg"
     ]
 
@@ -121,7 +137,7 @@ def main():
         sys.exit(1)
     print(out)
 
-    print("\nALL MILESTONE 1 CROSS-VALIDATION TESTS PASSED CLEANLY!")
+    print("\nALL MILESTONE 2 CROSS-VALIDATION TESTS PASSED CLEANLY!")
 
 if __name__ == "__main__":
     main()

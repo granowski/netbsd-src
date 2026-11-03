@@ -19,6 +19,18 @@ typedef struct prange {
     uint64_t pr_block_count;
 } prange_t;
 
+typedef struct apfs_range {
+    uint64_t ar_start;
+    uint64_t ar_len;
+} apfs_range_t;
+
+#define APFS_EXCLUSION_MAX_RANGES 16
+
+typedef struct apfs_exclusion_table {
+    apfs_range_t aet_ranges[APFS_EXCLUSION_MAX_RANGES];
+    uint32_t     aet_count;
+} apfs_exclusion_table_t;
+
 #define MAX_CKSUM_SIZE 8
 #define NX_NUM_COUNTERS 32
 #define NX_EPH_INFO_COUNT 4
@@ -525,9 +537,14 @@ int apfs_checkpoint_lookup(struct apfsmount *, oid_t, oid_t,
     apfs_paddr_t *);
 
 /* Space Manager Helpers */
-int apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
-int apfs_free_block(struct apfsmount *, apfs_paddr_t);
-int apfs_validate_spaceman(struct apfsmount *);
+bool apfs_range_valid(struct apfsmount *, uint64_t, uint64_t);
+bool apfs_range_overlaps(uint64_t, uint64_t, uint64_t, uint64_t);
+int  apfs_exclusion_add(struct apfsmount *, apfs_exclusion_table_t *, uint64_t, uint64_t, const char *);
+int  apfs_build_container_exclusions(struct apfsmount *, apfs_exclusion_table_t *);
+bool apfs_spaceman_candidate_safe(struct apfsmount *, const apfs_exclusion_table_t *, uint64_t);
+int  apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
+int  apfs_free_block(struct apfsmount *, apfs_paddr_t);
+int  apfs_validate_spaceman(struct apfsmount *);
 
 /* OMap Helpers */
 int apfs_omap_lookup(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t *);

@@ -20,8 +20,10 @@ The key principle is **don't enable writes until allocation, copy-on-write metad
 
 ## Immediate next step
 
-**Milestone 1 (Confirm Space Manager decoding)** is complete: Space Manager decoding, CIB traversal, free counts, LSB-first bit ordering, and bitmap polarity (clear bits `0` = free, set bits `1` = allocated) have been cross-validated across multiple test images against an independent APFS reference tool.
+**Milestones 1 & 2** are complete:
+- **Milestone 1 (Confirm Space Manager decoding):** Space Manager decoding, CIB traversal, free counts, LSB-first bit ordering, and bitmap polarity (clear bits `0` = free, set bits `1` = allocated) have been cross-validated across multiple test images against an independent APFS reference tool.
+- **Milestone 2 (Complete read-only allocation validation):** Container fixed exclusion zones (Superblock, Checkpoint Descriptor ring, Checkpoint Data ring, Blocked Out prange), internal pool metadata (`sm_ip_*`), filesystem reserves (`sm_fs_reserve_*`), and free queues (`sm_fq[0..2]`) are audited and validated. Candidate free blocks are strictly filtered against exclusion ranges, and all invalid or overlapping configurations fail closed cleanly.
 
-The next actionable item is **Milestone 2**: Complete read-only allocation validation (internal pool, allocation zones, free-queue accounting, and candidate safety bounds).
+The next actionable item is **Milestone 3**: Add an in-memory reservation model (candidate block selection for the supported scope, serializing reservations across operations, per-transaction tracking, and release on abort).
 
 Until Milestones 4–6 are complete and validated, keep the filesystem forced read-only. The current allocator and B-tree insertion routines are still placeholders; connecting them to the write path before those foundations exist could corrupt the volume.

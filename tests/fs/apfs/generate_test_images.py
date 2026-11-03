@@ -70,6 +70,44 @@ def create_populated_image(path: str, size_mb: int = 100, volname: str = "Popula
     finally:
         run_cmd(f"hdiutil detach {dev} || diskutil eject {dev}")
 
+def create_deleted_files_image(path: str, size_mb: int = 120, volname: str = "DeletedFilesAPFS"):
+    """Creates an APFS container with multiple generations of file creations and deletions."""
+    if os.path.exists(path):
+        os.remove(path)
+    run_cmd(f"hdiutil create -size {size_mb}m -fs APFS -volname '{volname}' -layout NONE '{path}'")
+
+    out = run_cmd(f"hdiutil attach '{path}'")
+    dev = None
+    mount_dir = None
+    for line in out.splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) >= 1 and "/dev/disk" in parts[0]:
+            if not dev:
+                dev = parts[0].strip()
+        if len(parts) >= 3 and os.path.exists(parts[2].strip()):
+            mount_dir = parts[2].strip()
+
+    if not dev or not mount_dir:
+        raise RuntimeError(f"Could not determine device/mount for attached image: {out}")
+
+    try:
+        # Phase 1: create several files
+        files_to_delete = []
+        for i in range(10):
+            fn = os.path.join(mount_dir, f"file_{i}.bin")
+            with open(fn, "wb") as f:
+                f.write(os.urandom(1024 * 1024 * (i + 1)))
+            if i % 2 == 0:
+                files_to_delete.append(fn)
+        run_cmd("sync")
+
+        # Phase 2: delete half the files to create free queues / fragmented space
+        for fn in files_to_delete:
+            os.remove(fn)
+        run_cmd("sync")
+    finally:
+        run_cmd(f"hdiutil detach {dev} || diskutil eject {dev}")
+
 def create_multi_chunk_image(path: str, size_mb: int = 300, volname: str = "MultiChunkAPFS"):
     """Creates a larger APFS container (300MB = 76,800 blocks > 32,768 blocks/chunk = at least 3 chunks)."""
     if os.path.exists(path):
@@ -87,6 +125,10 @@ def main():
     pop_path = os.path.join(out_dir, "populated_100m.dmg")
     print(f"Creating populated image at {pop_path}...")
     create_populated_image(pop_path, 100)
+
+    del_path = os.path.join(out_dir, "deleted_120m.dmg")
+    print(f"Creating deleted files image at {del_path}...")
+    create_deleted_files_image(del_path, 120)
 
     multi_path = os.path.join(out_dir, "multichunk_300m.dmg")
     print(f"Creating multi-chunk image at {multi_path}...")

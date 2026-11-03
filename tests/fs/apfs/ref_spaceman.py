@@ -137,10 +137,52 @@ class APFSReferenceParser:
             "<QQIIQIIQ", sm_raw[48:96]
         )
         dev1_blk_cnt, dev1_chk_cnt, dev1_cib_cnt, dev1_cab_cnt = struct.unpack("<QQII", sm_raw[96:120])
-        struct_size, = struct.unpack("<I", sm_raw[292:296])
+        
+        # Internal pool fields
+        sm_flags, sm_ip_bm_tx_multiplier, sm_ip_block_count, sm_ip_bm_size_in_blocks, sm_ip_bm_block_count, sm_ip_bm_base, sm_ip_base, sm_fs_res_blk_cnt, sm_fs_res_alloc_cnt = struct.unpack(
+            "<IIQIIqqQQ", sm_raw[144:200]
+        )
+
+        # Free queues (3 queues of 40 bytes each)
+        free_queues = []
+        active_fq_entries = 0
+        for q in range(3):
+            q_raw = sm_raw[200 + q * 40 : 200 + (q + 1) * 40]
+            sfq_count, sfq_tree_oid, sfq_oldest_xid, sfq_limit, sfq_p16, sfq_p32, sfq_res = struct.unpack(
+                "<QQQHHIQ", q_raw
+            )
+            free_queues.append({
+                "index": q,
+                "count": sfq_count,
+                "tree_oid": sfq_tree_oid,
+                "oldest_xid": sfq_oldest_xid,
+            })
+            if sfq_count > 0:
+                active_fq_entries += sfq_count
+
+        struct_size, = struct.unpack("<I", sm_raw[340:344]) if len(sm_raw) >= 344 else (0,)
 
         if dev0_cab_cnt != 0 or dev1_blk_cnt != 0 or dev1_chk_cnt != 0 or dev1_cib_cnt != 0 or dev1_cab_cnt != 0:
             raise NotImplementedError("CAB and multi-device configurations are unsupported")
+
+        # Build exclusion ranges
+        exclusion_ranges = [
+            (0, 1, "container superblock"),
+            (xp_desc_base, xp_desc_blocks, "checkpoint descriptor ring"),
+            (xp_data_base, xp_data_blocks, "checkpoint data ring"),
+        ]
+        if sm_ip_block_count > 0:
+            exclusion_ranges.append((sm_ip_base, sm_ip_block_count, "internal pool data"))
+        if sm_ip_bm_block_count > 0:
+            exclusion_ranges.append((sm_ip_bm_base, sm_ip_bm_block_count, "internal pool bitmap"))
+
+        def is_candidate_safe(paddr: int) -> bool:
+            if paddr <= 0 or paddr >= self.block_count:
+                return False
+            for start, length, _ in exclusion_ranges:
+                if start <= paddr < start + length:
+                    return False
+            return True
 
         # 4. Parse CIBs
         cib_addrs = []
@@ -194,14 +236,16 @@ class APFSReferenceParser:
                     first_clear = None
                     first_set = None
                     for bit in range(ci_blk_cnt):
+                        paddr = ci_addr + bit
+                        safe = is_candidate_safe(paddr)
                         val = (bm_raw[bit >> 3] >> (bit & 7)) & 1
                         if val == 0:
                             clear_cnt += 1
-                            if first_clear is None:
+                            if first_clear is None and safe:
                                 first_clear = bit
                         else:
                             set_cnt += 1
-                            if first_set is None:
+                            if first_set is None and safe:
                                 first_set = bit
                     chunk_info["clear_count"] = clear_cnt
                     chunk_info["set_count"] = set_cnt
@@ -248,6 +292,15 @@ class APFSReferenceParser:
             "total_validated_free": total_free_blocks,
             "polarity": polarity,
             "candidate_free_block": first_candidate_free,
+            "exclusion_ranges": exclusion_ranges,
+            "internal_pool": {
+                "block_count": sm_ip_block_count,
+                "base": sm_ip_base,
+                "bm_block_count": sm_ip_bm_block_count,
+                "bm_base": sm_ip_bm_base,
+            },
+            "free_queues": free_queues,
+            "active_fq_entries": active_fq_entries,
             "chunks": chunks_validated,
         }
 

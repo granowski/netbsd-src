@@ -478,20 +478,148 @@ apfs_spaceman_paddr_valid(struct apfsmount *amp, uint64_t paddr)
 	return paddr != 0 && paddr < block_count && paddr <= INT64_MAX;
 }
 
+bool
+apfs_range_valid(struct apfsmount *amp, uint64_t start, uint64_t len)
+{
+	uint64_t block_count = le64toh(amp->am_nx.nx_block_count);
+
+	if (len == 0)
+		return true;
+	if (start > INT64_MAX || len > INT64_MAX)
+		return false;
+	if (start + len < start || start + len > block_count)
+		return false;
+	return true;
+}
+
+bool
+apfs_range_overlaps(uint64_t s1, uint64_t l1, uint64_t s2, uint64_t l2)
+{
+	if (l1 == 0 || l2 == 0)
+		return false;
+	return s1 < (s2 + l2) && s2 < (s1 + l1);
+}
+
+int
+apfs_exclusion_add(struct apfsmount *amp, apfs_exclusion_table_t *table,
+    uint64_t start, uint64_t len, const char *desc)
+{
+	if (len == 0)
+		return 0;
+
+	if (!apfs_range_valid(amp, start, len)) {
+		printf("apfs_spaceman: invalid exclusion range for %s "
+		    "(start %llu, len %llu, container blocks %llu)\n",
+		    desc, (unsigned long long)start, (unsigned long long)len,
+		    (unsigned long long)le64toh(amp->am_nx.nx_block_count));
+		return EINVAL;
+	}
+
+	for (uint32_t i = 0; i < table->aet_count; i++) {
+		if (apfs_range_overlaps(start, len,
+		    table->aet_ranges[i].ar_start,
+		    table->aet_ranges[i].ar_len)) {
+			printf("apfs_spaceman: exclusion range overlap: %s "
+			    "(%llu..%llu) overlaps with range %u (%llu..%llu)\n",
+			    desc, (unsigned long long)start,
+			    (unsigned long long)(start + len - 1), i,
+			    (unsigned long long)table->aet_ranges[i].ar_start,
+			    (unsigned long long)(table->aet_ranges[i].ar_start +
+			    table->aet_ranges[i].ar_len - 1));
+			return EINVAL;
+		}
+	}
+
+	if (table->aet_count >= APFS_EXCLUSION_MAX_RANGES) {
+		printf("apfs_spaceman: exclusion table full\n");
+		return EINVAL;
+	}
+
+	table->aet_ranges[table->aet_count].ar_start = start;
+	table->aet_ranges[table->aet_count].ar_len = len;
+	table->aet_count++;
+	return 0;
+}
+
+int
+apfs_build_container_exclusions(struct apfsmount *amp,
+    apfs_exclusion_table_t *table)
+{
+	int error;
+
+	memset(table, 0, sizeof(*table));
+
+	/* Block 0: Container Superblock */
+	error = apfs_exclusion_add(amp, table, 0, 1, "container superblock");
+	if (error != 0)
+		return error;
+
+	/* Checkpoint Descriptor Ring */
+	error = apfs_exclusion_add(amp, table,
+	    (uint64_t)le64toh((uint64_t)amp->am_nx.nx_xp_desc_base),
+	    (uint64_t)le32toh(amp->am_nx.nx_xp_desc_blocks),
+	    "checkpoint descriptor ring");
+	if (error != 0)
+		return error;
+
+	/* Checkpoint Data Ring */
+	error = apfs_exclusion_add(amp, table,
+	    (uint64_t)le64toh((uint64_t)amp->am_nx.nx_xp_data_base),
+	    (uint64_t)le32toh(amp->am_nx.nx_xp_data_blocks),
+	    "checkpoint data ring");
+	if (error != 0)
+		return error;
+
+	/* Blocked out prange (if specified) */
+	if (le64toh(amp->am_nx.nx_blocked_out_prange.pr_block_count) > 0) {
+		error = apfs_exclusion_add(amp, table,
+		    (uint64_t)le64toh((uint64_t)amp->am_nx.nx_blocked_out_prange.pr_start_paddr),
+		    le64toh(amp->am_nx.nx_blocked_out_prange.pr_block_count),
+		    "blocked out prange");
+		if (error != 0)
+			return error;
+	}
+
+	return 0;
+}
+
+bool
+apfs_spaceman_candidate_safe(struct apfsmount *amp,
+    const apfs_exclusion_table_t *table, uint64_t paddr)
+{
+	if (!apfs_spaceman_paddr_valid(amp, paddr))
+		return false;
+
+	if (table != NULL) {
+		for (uint32_t i = 0; i < table->aet_count; i++) {
+			uint64_t start = table->aet_ranges[i].ar_start;
+			uint64_t len = table->aet_ranges[i].ar_len;
+			if (paddr >= start && paddr < start + len)
+				return false;
+		}
+	}
+
+	return true;
+}
+
 int
 apfs_validate_spaceman(struct apfsmount *amp)
 {
 	struct buf *smbp, *cibp;
 	spaceman_phys_t *sm;
 	spaceman_device_t *dev;
+	apfs_exclusion_table_t excl_table;
 	uint64_t block_count, chunk_count, expected_cib_count;
 	uint64_t total_free = 0;
 	uint64_t first_clear_free = 0, first_set_free = 0;
 	uint64_t first_clear_bitmap = 0, first_set_bitmap = 0;
 	uint64_t first_clear_chunk = 0, first_set_chunk = 0;
+	uint64_t ip_block_count, fs_reserve_block_count, fs_reserve_alloc_count;
+	uint64_t active_fq_entries = 0;
 	uint32_t first_clear_bit = 0, first_set_bit = 0;
 	uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
-	uint32_t struct_size;
+	uint32_t struct_size, ip_bm_size_in_blocks, ip_bm_block_count;
+	apfs_paddr_t ip_bm_base, ip_base;
 	int free_bit_value = -1;
 	bool have_clear_candidate = false, have_set_candidate = false;
 	bool have_bitmap = false, have_unmapped_chunk = false;
@@ -602,6 +730,82 @@ apfs_validate_spaceman(struct apfsmount *amp)
 		    (unsigned long long)chunk_count, cib_count);
 		brelse(smbp, 0);
 		return EINVAL;
+	}
+
+	error = apfs_build_container_exclusions(amp, &excl_table);
+	if (error != 0) {
+		brelse(smbp, 0);
+		return error;
+	}
+
+	ip_block_count = le64toh(sm->sm_ip_block_count);
+	ip_bm_size_in_blocks = le32toh(sm->sm_ip_bm_size_in_blocks);
+	ip_bm_block_count = le32toh(sm->sm_ip_bm_block_count);
+	ip_bm_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_bm_base);
+	ip_base = (apfs_paddr_t)le64toh((uint64_t)sm->sm_ip_base);
+	fs_reserve_block_count = le64toh(sm->sm_fs_reserve_block_count);
+	fs_reserve_alloc_count = le64toh(sm->sm_fs_reserve_alloc_count);
+
+	if (ip_block_count > 0) {
+		if (ip_base <= 0 || !apfs_range_valid(amp, (uint64_t)ip_base, ip_block_count)) {
+			printf("apfs_spaceman: invalid internal pool range (base %lld, count %llu)\n",
+			    (long long)ip_base, (unsigned long long)ip_block_count);
+			brelse(smbp, 0);
+			return EINVAL;
+		}
+		error = apfs_exclusion_add(amp, &excl_table, (uint64_t)ip_base,
+		    ip_block_count, "internal pool data");
+		if (error != 0) {
+			brelse(smbp, 0);
+			return error;
+		}
+	}
+	if (ip_bm_block_count > 0) {
+		if (ip_bm_base <= 0 || !apfs_range_valid(amp, (uint64_t)ip_bm_base, (uint64_t)ip_bm_block_count)) {
+			printf("apfs_spaceman: invalid internal pool bitmap range (base %lld, count %u)\n",
+			    (long long)ip_bm_base, ip_bm_block_count);
+			brelse(smbp, 0);
+			return EINVAL;
+		}
+		error = apfs_exclusion_add(amp, &excl_table, (uint64_t)ip_bm_base,
+		    (uint64_t)ip_bm_block_count, "internal pool bitmap");
+		if (error != 0) {
+			brelse(smbp, 0);
+			return error;
+		}
+	}
+	if (fs_reserve_alloc_count > fs_reserve_block_count) {
+		printf("apfs_spaceman: invalid fs reserve (alloc %llu > count %llu)\n",
+		    (unsigned long long)fs_reserve_alloc_count,
+		    (unsigned long long)fs_reserve_block_count);
+		brelse(smbp, 0);
+		return EINVAL;
+	}
+
+	for (int q = 0; q < 3; q++) {
+		uint64_t sfq_count = le64toh(sm->sm_fq[q].sfq_count);
+		oid_t sfq_tree_oid = le64toh(sm->sm_fq[q].sfq_tree_oid);
+		xid_t sfq_oldest_xid = le64toh(sm->sm_fq[q].sfq_oldest_xid);
+
+		if (sfq_count > 0) {
+			active_fq_entries += sfq_count;
+			if (sfq_tree_oid == 0 || sfq_oldest_xid > amp->am_checkpoint_xid) {
+				printf("apfs_spaceman: invalid active free queue %d "
+				    "(count %llu, tree OID 0x%llx, oldest xid 0x%llx)\n",
+				    q, (unsigned long long)sfq_count,
+				    (unsigned long long)sfq_tree_oid,
+				    (unsigned long long)sfq_oldest_xid);
+				brelse(smbp, 0);
+				return EINVAL;
+			}
+		} else if (sfq_tree_oid != 0 && sfq_oldest_xid > amp->am_checkpoint_xid) {
+			printf("apfs_spaceman: invalid free queue %d xid "
+			    "(oldest xid 0x%llx > checkpoint xid 0x%llx)\n",
+			    q, (unsigned long long)sfq_oldest_xid,
+			    (unsigned long long)amp->am_checkpoint_xid);
+			brelse(smbp, 0);
+			return EINVAL;
+		}
 	}
 
 	printf("apfs_spaceman: oid 0x%llx block size %u blocks %llu "
@@ -736,14 +940,18 @@ apfs_validate_spaceman(struct apfsmount *amp)
 
 				have_bitmap = true;
 				for (uint32_t bit = 0; bit < expected_blocks; bit++) {
+					uint64_t block_paddr = chunk_start + bit;
+					bool is_safe = apfs_spaceman_candidate_safe(amp,
+					    &excl_table, block_paddr);
+
 					/* APFS numbers bitmap bits from the LSB. */
 					if ((bitmap[bit >> 3] &
 					    (1U << (bit & 7))) == 0) {
-						if (first_clear == expected_blocks)
+						if (first_clear == expected_blocks && is_safe)
 							first_clear = bit;
 						clear_blocks++;
 					} else {
-						if (first_set == expected_blocks)
+						if (first_set == expected_blocks && is_safe)
 							first_set = bit;
 						set_blocks++;
 					}
@@ -817,6 +1025,10 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	printf("apfs_spaceman: validated %llu free blocks across %llu chunks\n",
 	    (unsigned long long)total_free,
 	    (unsigned long long)chunk_count);
+	if (active_fq_entries > 0) {
+		printf("apfs_spaceman: active free queues contain %llu delayed free entries\n",
+		    (unsigned long long)active_fq_entries);
+	}
 	if (free_bit_value == 0 && have_clear_candidate) {
 		printf("apfs_spaceman: bitmap semantics: clear bits are free; "
 		    "read-only candidate %llu (chunk %llu, bitmap %llu, "
