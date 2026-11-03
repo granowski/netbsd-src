@@ -527,6 +527,9 @@ apfs_unmount(struct mount *mp, int mntflags)
 	if (mntflags & MNT_FORCE)
 		flags |= FORCECLOSE;
 
+	if ((mp->mnt_flag & MNT_RDONLY) == 0)
+		apfs_vfsops_sync(mp, MNT_WAIT, l->l_cred);
+
 	error = vflush(mp, NULLVP, flags);
 	if (error)
 		return error;
@@ -573,9 +576,42 @@ apfs_statvfs(struct mount *mp, struct statvfs *sbp)
 }
 
 int
+apfs_vfsops_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
+{
+	struct apfsmount *amp = mp->mnt_data;
+	int error = 0;
+
+	if (amp == NULL)
+		return 0;
+
+	if (mp->mnt_flag & MNT_RDONLY)
+		return 0;
+
+	mutex_enter(&amp->am_resv_pool.rp_lock);
+	bool has_pending = (amp->am_resv_pool.rp_total_reserved > 0);
+	mutex_exit(&amp->am_resv_pool.rp_lock);
+
+	if (has_pending) {
+		apfs_tx_t tx;
+		error = apfs_tx_begin(amp, &tx);
+		if (error == 0) {
+			error = apfs_tx_commit(&tx);
+		}
+	}
+
+	if (amp->am_devvp != NULL) {
+		vn_lock(amp->am_devvp, LK_EXCLUSIVE | LK_RETRY);
+		VOP_FSYNC(amp->am_devvp, cred, FSYNC_WAIT, 0, 0);
+		VOP_UNLOCK(amp->am_devvp);
+	}
+
+	return error;
+}
+
+int
 apfs_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
 {
-	return 0;
+	return apfs_vfsops_sync(mp, waitfor, cred);
 }
 
 static const struct genfs_ops apfs_genfsops = {

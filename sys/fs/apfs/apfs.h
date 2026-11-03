@@ -537,6 +537,12 @@ typedef enum {
 
 /* Maximum ephemeral mappings per checkpoint transaction */
 #define APFS_TX_MAX_MAPPINGS 128
+#define APFS_TX_MAX_FREES    128
+
+typedef struct apfs_free_span {
+    apfs_paddr_t    fs_paddr;
+    uint64_t        fs_count;
+} apfs_free_span_t;
 
 /* In-memory Transaction Context */
 typedef struct apfs_tx {
@@ -546,6 +552,8 @@ typedef struct apfs_tx {
     apfs_resv_tx_t          tx_resv;
     uint32_t                tx_map_count;
     checkpoint_mapping_t    tx_mappings[APFS_TX_MAX_MAPPINGS];
+    uint32_t                tx_free_count;
+    apfs_free_span_t        tx_frees[APFS_TX_MAX_FREES];
 } apfs_tx_t;
 
 #ifdef _KERNEL
@@ -633,6 +641,12 @@ int apfs_omap_update(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t);
 /* Filesystem Operations Helpers */
 int apfs_create_file(struct apfsmount *, oid_t, const char *, mode_t, uid_t, gid_t, oid_t *);
 int apfs_write_file_extent(struct apfsmount *, oid_t, uint64_t, uint64_t, apfs_paddr_t);
+int apfs_create_dir(struct apfsmount *, oid_t, const char *, mode_t, uid_t, gid_t, oid_t *);
+int apfs_remove_file(struct apfsmount *, oid_t, const char *, oid_t);
+int apfs_remove_dir(struct apfsmount *, oid_t, const char *, oid_t);
+int apfs_truncate_file(struct apfsmount *, struct apfsnode *, uint64_t);
+int apfs_free_queue_add(apfs_tx_t *, apfs_paddr_t, uint64_t);
+int apfs_vfsops_sync(struct mount *, int, kauth_cred_t);
 
 /* Checksum */
 uint64_t apfs_fletcher64(const void *, size_t);

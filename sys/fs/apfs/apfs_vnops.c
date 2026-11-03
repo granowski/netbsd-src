@@ -312,11 +312,25 @@ int
 apfs_vop_setattr(void *v)
 {
 	struct vop_setattr_args *ap = v;
-	struct mount *mp = ap->a_vp->v_mount;
-	if (mp->mnt_flag & MNT_RDONLY)
+	struct vnode *vp = ap->a_vp;
+	struct vattr *vap = ap->a_vap;
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = apnode->a_amp;
+	int error = 0;
+
+	if (vp->v_mount->mnt_flag & MNT_RDONLY)
 		return EROFS;
-	
-	return EOPNOTSUPP;
+
+	if (vap->va_size != VNOVAL) {
+		if (vp->v_type == VDIR)
+			return EISDIR;
+		error = apfs_truncate_file(amp, apnode, vap->va_size);
+		if (error != 0)
+			return error;
+		uvm_vnp_setsize(vp, vap->va_size);
+	}
+
+	return 0;
 }
 
 int
@@ -498,26 +512,94 @@ apfs_vop_write(void *v)
 int
 apfs_vop_fsync(void *v)
 {
-	/* TODO: Flush transactions and write new Container Superblock (COW) */
-	return 0;
+	struct vop_fsync_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+
+	if (vp->v_mount->mnt_flag & MNT_RDONLY)
+		return 0;
+
+	return apfs_vfsops_sync(vp->v_mount, ap->a_flags, ap->a_cred);
 }
 
 int
 apfs_vop_remove(void *v)
 {
-	return EOPNOTSUPP;
+	struct vop_remove_v3_args *ap = v;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp = ap->a_vp;
+	struct componentname *cnp = ap->a_cnp;
+	struct apfsnode *dnode = VTOA(dvp);
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = dnode->a_amp;
+	char name_buf[256];
+
+	if (dvp->v_mount->mnt_flag & MNT_RDONLY)
+		return EROFS;
+
+	if (cnp->cn_namelen >= sizeof(name_buf))
+		return ENAMETOOLONG;
+
+	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
+	name_buf[cnp->cn_namelen] = '\0';
+
+	return apfs_remove_file(amp, dnode->a_oid, name_buf, apnode->a_oid);
 }
 
 int
 apfs_vop_mkdir(void *v)
 {
-	return EOPNOTSUPP;
+	struct vop_mkdir_v3_args *ap = v;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode **vpp = ap->a_vpp;
+	struct componentname *cnp = ap->a_cnp;
+	struct vattr *vap = ap->a_vap;
+	struct apfsnode *dnode = VTOA(dvp);
+	struct apfsmount *amp = dnode->a_amp;
+	oid_t new_ino_oid;
+	char name_buf[256];
+	int error;
+
+	if (dvp->v_mount->mnt_flag & MNT_RDONLY)
+		return EROFS;
+
+	if (cnp->cn_namelen >= sizeof(name_buf))
+		return ENAMETOOLONG;
+
+	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
+	name_buf[cnp->cn_namelen] = '\0';
+
+	error = apfs_create_dir(amp, dnode->a_oid, name_buf, vap->va_mode,
+	    vap->va_uid, vap->va_gid, &new_ino_oid);
+	if (error != 0)
+		return error;
+
+	ino_t ino = (ino_t)new_ino_oid;
+	error = vcache_get(dvp->v_mount, &ino, sizeof(ino), vpp);
+	return error;
 }
 
 int
 apfs_vop_rmdir(void *v)
 {
-	return EOPNOTSUPP;
+	struct vop_rmdir_v2_args *ap = v;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp = ap->a_vp;
+	struct componentname *cnp = ap->a_cnp;
+	struct apfsnode *dnode = VTOA(dvp);
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = dnode->a_amp;
+	char name_buf[256];
+
+	if (dvp->v_mount->mnt_flag & MNT_RDONLY)
+		return EROFS;
+
+	if (cnp->cn_namelen >= sizeof(name_buf))
+		return ENAMETOOLONG;
+
+	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
+	name_buf[cnp->cn_namelen] = '\0';
+
+	return apfs_remove_dir(amp, dnode->a_oid, name_buf, apnode->a_oid);
 }
 
 struct apfs_readdir_ctx {
