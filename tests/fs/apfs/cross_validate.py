@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cross-validation script for APFS Space Manager (Milestone 3: In-Memory Reservation & Allocation Model).
+Cross-validation script for APFS Space Manager (Milestone 4: Transaction & Copy-on-Write I/O Foundations).
 Compares C-based kernel decoder outputs against the independent Python reference parser and validates disk immutability.
 """
 
@@ -160,7 +160,7 @@ def main():
         assert initial_hash == final_hash, f"Immutability violated for {img}! Before: {initial_hash}, After: {final_hash}"
         print(f"  ✓ Image {os.path.basename(img)} byte-for-byte identical (SHA-256: {initial_hash[:16]}...)")
 
-    print("\nALL MILESTONE 3 CROSS-VALIDATION & IMMUTABILITY TESTS PASSED CLEANLY!")
+    print("\nALL MILESTONE 4 CROSS-VALIDATION & IMMUTABILITY TESTS PASSED CLEANLY!")
 
 if __name__ == "__main__":
     main()

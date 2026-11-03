@@ -514,6 +514,28 @@ typedef struct apfs_resv_tx {
     LIST_HEAD(apfs_resv_tx_head, apfs_resv_entry) rt_entries;
 } apfs_resv_tx_t;
 
+/* Transaction States */
+typedef enum {
+    APFS_TX_STATE_INACTIVE = 0,
+    APFS_TX_STATE_ACTIVE,
+    APFS_TX_STATE_COMMITTING,
+    APFS_TX_STATE_COMMITTED,
+    APFS_TX_STATE_ABORTED
+} apfs_tx_state_t;
+
+/* Maximum ephemeral mappings per checkpoint transaction */
+#define APFS_TX_MAX_MAPPINGS 128
+
+/* In-memory Transaction Context */
+typedef struct apfs_tx {
+    struct apfsmount       *tx_amp;
+    uint64_t                tx_xid;
+    apfs_tx_state_t         tx_state;
+    apfs_resv_tx_t          tx_resv;
+    uint32_t                tx_map_count;
+    checkpoint_mapping_t    tx_mappings[APFS_TX_MAX_MAPPINGS];
+} apfs_tx_t;
+
 #ifdef _KERNEL
 struct apfsmount {
     struct mount    *am_mountp;
@@ -557,6 +579,9 @@ int apfs_btree_iterate(struct apfsmount *, oid_t, oid_t, void *, size_t, apfs_bt
 int apfs_btree_insert(struct apfsmount *, oid_t *, void *, void *);
 int apfs_btree_remove(struct apfsmount *, oid_t *, void *);
 int apfs_bread(struct apfsmount *, apfs_paddr_t, struct buf **);
+int apfs_getblk(struct apfsmount *, apfs_paddr_t, struct buf **);
+int apfs_bwrite(struct apfsmount *, apfs_paddr_t, struct buf *);
+int apfs_bwrite_cow(apfs_tx_t *, apfs_paddr_t, struct buf *);
 bool apfs_checksum_valid(struct apfsmount *, const void *);
 int apfs_select_checkpoint(struct apfsmount *);
 int apfs_checkpoint_lookup(struct apfsmount *, oid_t, oid_t,
@@ -577,6 +602,15 @@ bool apfs_resv_is_reserved(struct apfsmount *, uint64_t, uint64_t);
 int  apfs_alloc_block(struct apfsmount *, apfs_paddr_t *);
 int  apfs_free_block(struct apfsmount *, apfs_paddr_t);
 int  apfs_validate_spaceman(struct apfsmount *);
+
+/* Transaction & COW Helpers */
+void apfs_obj_init(obj_phys_t *, oid_t, uint64_t, uint32_t, uint32_t);
+void apfs_obj_set_cksum(struct apfsmount *, void *);
+int  apfs_tx_begin(struct apfsmount *, apfs_tx_t *);
+int  apfs_tx_alloc_block(apfs_tx_t *, uint64_t, apfs_paddr_t *);
+int  apfs_tx_add_mapping(apfs_tx_t *, uint32_t, uint32_t, uint32_t, oid_t, oid_t, apfs_paddr_t);
+int  apfs_tx_commit(apfs_tx_t *);
+void apfs_tx_abort(apfs_tx_t *);
 
 /* OMap Helpers */
 int apfs_omap_lookup(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t *);

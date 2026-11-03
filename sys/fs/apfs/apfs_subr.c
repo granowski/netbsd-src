@@ -101,6 +101,86 @@ apfs_bread(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
 	return bread(amp->am_devvp, (daddr_t)blkno, amp->am_block_size, 0, bpp);
 }
 
+int
+apfs_getblk(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
+{
+	uint64_t sectors_per_block, blkno;
+	struct buf *bp;
+
+	if (paddr < 0 || amp == NULL || amp->am_block_size < DEV_BSIZE ||
+	    amp->am_block_size % DEV_BSIZE != 0 || bpp == NULL)
+		return EINVAL;
+
+	sectors_per_block = amp->am_block_size / DEV_BSIZE;
+	if ((uint64_t)paddr > (uint64_t)INT64_MAX / sectors_per_block)
+		return EOVERFLOW;
+	blkno = (uint64_t)paddr * sectors_per_block;
+
+	bp = getblk(amp->am_devvp, (daddr_t)blkno, amp->am_block_size, 0, 0);
+	if (bp == NULL)
+		return ENOMEM;
+
+	*bpp = bp;
+	return 0;
+}
+
+int
+apfs_bwrite(struct apfsmount *amp, apfs_paddr_t paddr, struct buf *bp)
+{
+	uint64_t sectors_per_block, blkno;
+
+	if (paddr < 0 || amp == NULL || amp->am_block_size < DEV_BSIZE ||
+	    amp->am_block_size % DEV_BSIZE != 0 || bp == NULL)
+		return EINVAL;
+
+	sectors_per_block = amp->am_block_size / DEV_BSIZE;
+	if ((uint64_t)paddr > (uint64_t)INT64_MAX / sectors_per_block)
+		return EOVERFLOW;
+	blkno = (uint64_t)paddr * sectors_per_block;
+
+	bp->b_blkno = (daddr_t)blkno;
+	bp->b_bcount = amp->am_block_size;
+	return bwrite(bp);
+}
+
+int
+apfs_bwrite_cow(apfs_tx_t *tx, apfs_paddr_t paddr, struct buf *bp)
+{
+	if (tx == NULL || tx->tx_amp == NULL || tx->tx_state != APFS_TX_STATE_ACTIVE)
+		return EINVAL;
+
+	return apfs_bwrite(tx->tx_amp, paddr, bp);
+}
+
+void
+apfs_obj_init(obj_phys_t *obj, oid_t oid, uint64_t xid, uint32_t type,
+    uint32_t subtype)
+{
+	if (obj == NULL)
+		return;
+
+	memset(obj->o_cksum, 0, sizeof(obj->o_cksum));
+	obj->o_oid = htole64(oid);
+	obj->o_xid = htole64(xid);
+	obj->o_type = htole32(type);
+	obj->o_subtype = htole32(subtype);
+}
+
+void
+apfs_obj_set_cksum(struct apfsmount *amp, void *obj)
+{
+	obj_phys_t *o = (obj_phys_t *)obj;
+	uint64_t cksum, le_cksum;
+
+	if (amp == NULL || o == NULL)
+		return;
+
+	memset(o->o_cksum, 0, sizeof(o->o_cksum));
+	cksum = apfs_fletcher64(obj, amp->am_block_size);
+	le_cksum = htole64(cksum);
+	memcpy(o->o_cksum, &le_cksum, sizeof(o->o_cksum));
+}
+
 bool
 apfs_checksum_valid(struct apfsmount *amp, const void *object)
 {
@@ -2438,5 +2518,194 @@ int
 apfs_free_block(struct apfsmount *amp, apfs_paddr_t paddr)
 {
 	apfs_resv_free(amp, paddr, 1);
+	return 0;
+}
+
+/* Transaction Management */
+
+int
+apfs_tx_begin(struct apfsmount *amp, apfs_tx_t *tx)
+{
+	if (amp == NULL || tx == NULL)
+		return EINVAL;
+
+	memset(tx, 0, sizeof(*tx));
+	tx->tx_amp = amp;
+	tx->tx_xid = amp->am_checkpoint_xid + 1;
+	tx->tx_state = APFS_TX_STATE_ACTIVE;
+	tx->tx_resv.rt_tx_id = tx->tx_xid;
+	tx->tx_resv.rt_count = 0;
+	LIST_INIT(&tx->tx_resv.rt_entries);
+	tx->tx_map_count = 0;
+
+	return 0;
+}
+
+int
+apfs_tx_alloc_block(apfs_tx_t *tx, uint64_t count, apfs_paddr_t *paddrp)
+{
+	if (tx == NULL || tx->tx_amp == NULL || tx->tx_state != APFS_TX_STATE_ACTIVE)
+		return EINVAL;
+
+	return apfs_resv_alloc(tx->tx_amp, &tx->tx_resv, count, paddrp);
+}
+
+int
+apfs_tx_add_mapping(apfs_tx_t *tx, uint32_t type, uint32_t subtype,
+    uint32_t size, oid_t fs_oid, oid_t oid, apfs_paddr_t paddr)
+{
+	checkpoint_mapping_t *entry;
+
+	if (tx == NULL || tx->tx_state != APFS_TX_STATE_ACTIVE)
+		return EINVAL;
+
+	if (tx->tx_map_count >= APFS_TX_MAX_MAPPINGS)
+		return ENOSPC;
+
+	entry = &tx->tx_mappings[tx->tx_map_count++];
+	entry->cpm_type = htole32(type);
+	entry->cpm_subtype = htole32(subtype);
+	entry->cpm_size = htole32(size);
+	entry->cpm_pad = 0;
+	entry->cpm_fs_oid = htole64(fs_oid);
+	entry->cpm_oid = htole64(oid);
+	entry->cpm_paddr = (apfs_paddr_t)htole64((uint64_t)paddr);
+
+	return 0;
+}
+
+void
+apfs_tx_abort(apfs_tx_t *tx)
+{
+	if (tx == NULL || tx->tx_state == APFS_TX_STATE_INACTIVE)
+		return;
+
+	if (tx->tx_amp != NULL)
+		apfs_resv_abort(tx->tx_amp, &tx->tx_resv);
+
+	tx->tx_map_count = 0;
+	tx->tx_state = APFS_TX_STATE_ABORTED;
+}
+
+int
+apfs_tx_commit(apfs_tx_t *tx)
+{
+	struct apfsmount *amp;
+	struct buf *bp = NULL;
+	uint64_t desc_base;
+	uint32_t desc_blocks, old_desc_index, old_desc_len;
+	uint32_t new_desc_index, new_desc_len, num_map_blocks;
+	uint32_t capacity, map_count;
+	int error;
+
+	if (tx == NULL || tx->tx_amp == NULL || tx->tx_state != APFS_TX_STATE_ACTIVE)
+		return EINVAL;
+
+	amp = tx->tx_amp;
+	desc_blocks = amp->am_desc_blocks;
+	desc_base = le64toh(amp->am_nx.nx_xp_desc_base);
+	old_desc_index = le32toh(amp->am_nx.nx_xp_desc_index);
+	old_desc_len = le32toh(amp->am_nx.nx_xp_desc_len);
+
+	if (desc_blocks == 0 || desc_base == 0)
+		return EINVAL;
+
+	capacity = (amp->am_block_size - sizeof(checkpoint_map_phys_t)) /
+	    sizeof(checkpoint_mapping_t);
+	if (capacity == 0)
+		return EINVAL;
+
+	map_count = tx->tx_map_count;
+	num_map_blocks = (map_count == 0) ? 1 : (map_count + capacity - 1) / capacity;
+	new_desc_len = num_map_blocks + 1;
+
+	if (new_desc_len > desc_blocks)
+		return ENOSPC;
+
+	new_desc_index = (old_desc_index + old_desc_len) % desc_blocks;
+	tx->tx_state = APFS_TX_STATE_COMMITTING;
+
+	/* Phase 2a: Write Checkpoint Map blocks to descriptor ring */
+	for (uint32_t i = 0; i < num_map_blocks; i++) {
+		uint32_t slot = (new_desc_index + i) % desc_blocks;
+		apfs_paddr_t map_paddr = (apfs_paddr_t)(desc_base + slot);
+		checkpoint_map_phys_t *map;
+		uint32_t start_idx, entries_in_block, flags = 0;
+
+		error = apfs_getblk(amp, map_paddr, &bp);
+		if (error != 0) {
+			apfs_tx_abort(tx);
+			return error;
+		}
+
+		map = (checkpoint_map_phys_t *)bp->b_data;
+		memset(map, 0, amp->am_block_size);
+		apfs_obj_init(&map->cpm_o, (oid_t)map_paddr, tx->tx_xid,
+		    OBJ_CHECKPOINT_MAP | OBJ_PHYSICAL, 0);
+
+		if (i == num_map_blocks - 1)
+			flags |= CHECKPOINT_MAP_LAST;
+		map->cpm_flags = htole32(flags);
+
+		start_idx = i * capacity;
+		entries_in_block = (start_idx + capacity <= map_count) ?
+		    capacity : (map_count > start_idx ? map_count - start_idx : 0);
+		map->cpm_count = htole32(entries_in_block);
+
+		for (uint32_t j = 0; j < entries_in_block; j++) {
+			map->cpm_map[j] = tx->tx_mappings[start_idx + j];
+		}
+
+		apfs_obj_set_cksum(amp, map);
+
+		error = apfs_bwrite(amp, map_paddr, bp);
+		if (error != 0) {
+			apfs_tx_abort(tx);
+			return error;
+		}
+	}
+
+	/* Phase 2b: Write updated Container Superblock to descriptor ring */
+	uint32_t sb_slot = (new_desc_index + num_map_blocks) % desc_blocks;
+	apfs_paddr_t sb_paddr = (apfs_paddr_t)(desc_base + sb_slot);
+	nx_superblock_t *new_nx;
+
+	error = apfs_getblk(amp, sb_paddr, &bp);
+	if (error != 0) {
+		apfs_tx_abort(tx);
+		return error;
+	}
+
+	new_nx = (nx_superblock_t *)bp->b_data;
+	memcpy(new_nx, &amp->am_nx, sizeof(*new_nx));
+	apfs_obj_init(&new_nx->nx_o, 1, tx->tx_xid,
+	    OBJ_CONTAINER_SUPERBLOCK | OBJ_PHYSICAL, 0);
+	new_nx->nx_next_xid = htole64(tx->tx_xid + 1);
+	new_nx->nx_xp_desc_index = htole32(new_desc_index);
+	new_nx->nx_xp_desc_len = htole32(new_desc_len);
+	apfs_obj_set_cksum(amp, new_nx);
+
+	error = apfs_bwrite(amp, sb_paddr, bp);
+	if (error != 0) {
+		apfs_tx_abort(tx);
+		return error;
+	}
+
+	/* Update in-memory mount state */
+	amp->am_checkpoint_xid = tx->tx_xid;
+	memcpy(&amp->am_nx, new_nx, sizeof(amp->am_nx));
+
+	/* Clean up transaction handle */
+	apfs_resv_entry_t *re, *tmp;
+	re = LIST_FIRST(&tx->tx_resv.rt_entries);
+	while (re != NULL) {
+		tmp = LIST_NEXT(re, re_link);
+		LIST_REMOVE(re, re_link);
+		kmem_free(re, sizeof(*re));
+		re = tmp;
+	}
+	tx->tx_resv.rt_count = 0;
+	tx->tx_state = APFS_TX_STATE_COMMITTED;
+
 	return 0;
 }
