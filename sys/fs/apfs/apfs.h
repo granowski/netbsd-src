@@ -573,6 +573,7 @@ struct apfsmount {
     uint32_t         am_hash_size;
     uint8_t          am_root_hash[BTREE_NODE_HASH_SIZE_MAX];
     bool             am_sealed;
+    bool             am_spaceman_write_safe;
     kmutex_t         am_lock;
     struct vnode    *am_rootvp;
     apfs_resv_pool_t am_resv_pool;

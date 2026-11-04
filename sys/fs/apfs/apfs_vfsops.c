@@ -326,6 +326,18 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	if (error != 0)
 		printf("apfs_mount: Space Manager validation unavailable or "
 		    "failed: error %d\n", error);
+	if ((mp->mnt_flag & MNT_RDONLY) == 0 &&
+	    (error != 0 || !amp->am_spaceman_write_safe)) {
+		if (error == 0) {
+			printf("apfs_mount: unsupported Space Manager bitmap "
+			    "semantics for writing\n");
+			error = EOPNOTSUPP;
+		}
+		apfs_resv_destroy(amp);
+		mutex_destroy(&amp->am_lock);
+		kmem_free(amp, sizeof(*amp));
+		goto error_close;
+	}
 
 	/* 5. Find Volume Superblock */
 	error = ENOENT;
@@ -483,12 +495,20 @@ apfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		goto error_close;
 	}
 
+	if ((mp->mnt_flag & MNT_RDONLY) == 0 && amp->am_sealed) {
+		printf("apfs_mount: sealed volumes cannot be mounted read-write\n");
+		error = EROFS;
+		apfs_resv_destroy(amp);
+		mutex_destroy(&amp->am_lock);
+		kmem_free(amp, sizeof(*amp));
+		goto error_close;
+	}
+
 	mp->mnt_data = amp;
 	mp->mnt_stat.f_namemax = 255;
 	mp->mnt_fs_bshift = amp->am_block_shift;
 	mp->mnt_dev_bshift = DEV_BSHIFT;
 	mp->mnt_flag |= MNT_LOCAL;
-	mp->mnt_flag |= MNT_RDONLY; /* Force Read-Only for now */
 	vfs_getnewfsid(mp);
 
 	error = set_statvfs_info(path, UIO_USERSPACE, args->fspec, UIO_USERSPACE,

@@ -1082,6 +1082,8 @@ apfs_validate_spaceman(struct apfsmount *amp)
 	apfs_paddr_t spaceman_paddr;
 	int error;
 
+	amp->am_spaceman_write_safe = false;
+
 	if (le64toh(amp->am_nx.nx_spaceman_oid) == 0)
 		return EINVAL;
 	error = apfs_checkpoint_lookup(amp,
@@ -1507,6 +1509,7 @@ apfs_validate_spaceman(struct apfsmount *amp)
 		printf("apfs_spaceman: free chunks lack allocation bitmaps; "
 		    "no safe candidate reported\n");
 	}
+	amp->am_spaceman_write_safe = free_bit_value == 0;
 	brelse(smbp, 0);
 	return 0;
 }
