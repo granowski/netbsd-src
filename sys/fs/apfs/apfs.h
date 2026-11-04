@@ -540,11 +540,17 @@ typedef enum {
 /* Maximum ephemeral mappings per checkpoint transaction */
 #define APFS_TX_MAX_MAPPINGS 16
 #define APFS_TX_MAX_FREES    16
+#define APFS_TX_MAX_OMAPS    4
 
 typedef struct apfs_free_span {
     apfs_paddr_t    fs_paddr;
     uint64_t        fs_count;
 } apfs_free_span_t;
+
+typedef struct apfs_omap_stage {
+    oid_t           os_oid;
+    apfs_paddr_t    os_paddr;
+} apfs_omap_stage_t;
 
 /* In-memory Transaction Context */
 typedef struct apfs_tx {
@@ -554,6 +560,9 @@ typedef struct apfs_tx {
     apfs_resv_tx_t          tx_resv;
     uint32_t                tx_map_count;
     checkpoint_mapping_t    tx_mappings[APFS_TX_MAX_MAPPINGS];
+    uint32_t                tx_omap_count;
+    apfs_omap_stage_t       tx_omaps[APFS_TX_MAX_OMAPS];
+    apfs_superblock_t       tx_sb_snapshot;
     uint32_t                tx_free_count;
     apfs_free_span_t        tx_frees[APFS_TX_MAX_FREES];
 } apfs_tx_t;
@@ -641,7 +650,7 @@ void apfs_tx_abort(apfs_tx_t *);
 
 /* OMap Helpers */
 int apfs_omap_lookup(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t *);
-int apfs_omap_update(struct apfsmount *, oid_t, oid_t, xid_t, apfs_paddr_t);
+int apfs_omap_update(apfs_tx_t *, oid_t, oid_t, apfs_paddr_t);
 
 /* Filesystem Operations Helpers */
 int apfs_create_file(struct apfsmount *, oid_t, const char *, mode_t, uid_t, gid_t, oid_t *);

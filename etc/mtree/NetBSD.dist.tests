@@ -510,6 +510,7 @@
 ./usr/tests/usr.sbin/certctl/certs4
 ./usr/tests/usr.sbin/cpuctl
 ./usr/tests/usr.sbin/execsnoop
+./usr/tests/usr.sbin/fstyp
 ./usr/tests/usr.sbin/inetd
 ./usr/tests/usr.sbin/makefs
 ./usr/tests/usr.sbin/mtree

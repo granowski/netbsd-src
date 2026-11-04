@@ -30,13 +30,15 @@ See the
 man page for possible options and their meanings.
 .El
 .Sh NOTES
-Read-write mounts are available for unsealed APFS volumes when the Space
+Read-write mounts may be requested for unsealed APFS volumes when the Space
 Manager metadata validates and its free-block bitmap uses supported
 semantics. Use
 .Fl o Cm rw
 to request a read-write mount. Sealed volumes cannot be mounted read-write.
-Encrypted objects and file-data hash verification are not supported, and a
-volume whose required metadata is encrypted cannot be mounted.
+Read-write operation is experimental and has not been validated on all APFS
+volumes. Test only with disposable volumes and keep backups. Encrypted
+objects and file-data hash verification are not supported, and a volume whose
+required metadata is encrypted cannot be mounted.
 .Sh SEE ALSO
 .Xr mount 2 ,
 .Xr mount 8
