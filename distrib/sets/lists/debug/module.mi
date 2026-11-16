@@ -15,6 +15,8 @@
 ./usr/libdata/debug/@MODULEDIR@/aio/aio.kmod.debug			modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/am2315temp			modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/am2315temp/am2315temp.kmod.debug	modules-base-kernel	kmod,debug
+./usr/libdata/debug/@MODULEDIR@/apfs				modules-base-kernel	kmod,debug
+./usr/libdata/debug/@MODULEDIR@/apfs/apfs.kmod.debug		modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/audio				modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/audio/audio.kmod.debug			modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/autofs				modules-base-kernel	kmod,debug

@@ -21,6 +21,8 @@
 ./@MODULEDIR@/am2315temp/am2315temp.kmod	modules-base-kernel	kmod
 ./@MODULEDIR@/amr				base-obsolete		obsolete
 ./@MODULEDIR@/amr/amr.kmod			base-obsolete		obsolete
+./@MODULEDIR@/apfs				modules-base-kernel	kmod
+./@MODULEDIR@/apfs/apfs.kmod			modules-base-kernel	kmod
 ./@MODULEDIR@/ataraid				base-obsolete		obsolete
 ./@MODULEDIR@/ataraid/ataraid.kmod		base-obsolete		obsolete
 ./@MODULEDIR@/audio				modules-base-kernel	kmod

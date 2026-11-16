@@ -32,6 +32,7 @@ SUBDIR+=	adosfs
 SUBDIR+=	adiantum
 SUBDIR+=	aht20temp
 SUBDIR+=	aio
+SUBDIR+=	apfs
 SUBDIR+=	audio
 SUBDIR+=	autofs
 SUBDIR+=	blake2s

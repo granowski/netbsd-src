@@ -641,6 +641,9 @@
 ./usr/lib/librumpdev_wscons.so			base-rump-shlib		rump
 ./usr/lib/librumpdev_wscons.so.0 		base-rump-shlib		rump
 ./usr/lib/librumpdev_wscons.so.0.0		base-rump-shlib		rump
+./usr/lib/librumpfs_apfs.so			base-rump-shlib		rump
+./usr/lib/librumpfs_apfs.so.0			base-rump-shlib		rump
+./usr/lib/librumpfs_apfs.so.0.0			base-rump-shlib		rump
 ./usr/lib/librumpfs_cd9660.so			base-rump-shlib		rump
 ./usr/lib/librumpfs_cd9660.so.0			base-rump-shlib		rump
 ./usr/lib/librumpfs_cd9660.so.0.0		base-rump-shlib		rump

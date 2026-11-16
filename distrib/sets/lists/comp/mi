@@ -4298,6 +4298,8 @@
 ./usr/lib/librumpdev_vnd_p.a			comp-c-proflib		rump,profile
 ./usr/lib/librumpdev_wscons.a			comp-c-lib		rump
 ./usr/lib/librumpdev_wscons_p.a			comp-c-proflib		rump,profile
+./usr/lib/librumpfs_apfs.a			comp-c-lib		rump
+./usr/lib/librumpfs_apfs_p.a			comp-c-proflib		rump,profile
 ./usr/lib/librumpfs_cd9660.a			comp-c-lib		rump
 ./usr/lib/librumpfs_cd9660_p.a			comp-c-proflib		rump,profile
 ./usr/lib/librumpfs_efs.a			comp-c-lib		rump

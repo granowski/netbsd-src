@@ -198,6 +198,7 @@
 ./usr/lib/librumpdev_usb_pic.a			comp-c-piclib		picinstall,rump
 ./usr/lib/librumpdev_vnd_pic.a			comp-c-piclib		picinstall,rump
 ./usr/lib/librumpdev_wscons_pic.a		comp-c-piclib		picinstall,rump
+./usr/lib/librumpfs_apfs_pic.a			comp-c-piclib		picinstall,rump
 ./usr/lib/librumpfs_cd9660_pic.a		comp-c-piclib		picinstall,rump
 ./usr/lib/librumpfs_efs_pic.a			comp-c-piclib		picinstall,rump
 ./usr/lib/librumpfs_ext2fs_pic.a		comp-c-piclib		picinstall,rump

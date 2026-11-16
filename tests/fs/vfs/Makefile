@@ -28,6 +28,7 @@ SRCS.t_link+= sysctlbyname.c sysctlgetmibinfo.c t_link.c
 
 LDADD+=-lrumpnet_shmif -lrumpnet -lrumpnet_net -lrumpnet_netinet# TCP/IP
 LDADD+=-lrumpfs_nfs						# NFS
+LDADD+=-lrumpfs_apfs						# apfs
 LDADD+=-lrumpfs_ext2fs						# ext2fs
 LDADD+=-lrumpfs_ffs						# ffs
 LDADD+=-lrumpfs_lfs						# lfs
