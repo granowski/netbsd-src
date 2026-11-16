@@ -640,7 +640,7 @@ int  apfs_validate_spaceman(struct apfsmount *);
 int  apfs_spaceman_tx_update(apfs_tx_t *);
 
 /* Transaction & COW Helpers */
-void apfs_obj_init(obj_phys_t *, oid_t, uint64_t, uint32_t, uint32_t);
+void apfs_obj_init(void *, oid_t, uint64_t, uint32_t, uint32_t);
 void apfs_obj_set_cksum(struct apfsmount *, void *);
 int  apfs_tx_begin(struct apfsmount *, apfs_tx_t *);
 int  apfs_tx_alloc_block(apfs_tx_t *, uint64_t, apfs_paddr_t *);

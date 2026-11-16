@@ -636,9 +636,11 @@ apfs_bwrite_cow(apfs_tx_t *tx, apfs_paddr_t paddr, struct buf *bp)
 }
 
 void
-apfs_obj_init(obj_phys_t *obj, oid_t oid, uint64_t xid, uint32_t type,
+apfs_obj_init(void *object, oid_t oid, uint64_t xid, uint32_t type,
     uint32_t subtype)
 {
+    obj_phys_t *obj = (obj_phys_t *)object;
+
     if (obj == NULL)
         return;
 
@@ -1807,7 +1809,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
     /* 2. Write all modified CIB blocks */
     for (uint32_t j = 0; j < num_cibs; j++) {
         chunk_info_block_phys_t *cib = cibs[j].cibm_data;
-        apfs_obj_init(&cib->cib_o, (oid_t)cibs[j].cibm_new_paddr, tx->tx_xid,
+        apfs_obj_init(cib, (oid_t)cibs[j].cibm_new_paddr, tx->tx_xid,
             OBJ_SPACEMAN_CIB | OBJ_PHYSICAL, 0);
 
         for (uint32_t i = 0; i < num_chunks; i++) {
@@ -1838,7 +1840,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
     /* 3. Write Space Manager block */
     new_sm = (spaceman_phys_t *)malloc(amp->am_block_size);
     memcpy(new_sm, sm, amp->am_block_size);
-    apfs_obj_init(&new_sm->o, le64toh(amp->am_nx.nx_spaceman_oid), tx->tx_xid,
+    apfs_obj_init(new_sm, le64toh(amp->am_nx.nx_spaceman_oid), tx->tx_xid,
         OBJ_SPACEMAN | OBJ_EPHEMERAL, 0);
 
     uint64_t total_freed = 0;

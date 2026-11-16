@@ -155,9 +155,11 @@ apfs_bwrite_cow(apfs_tx_t *tx, apfs_paddr_t paddr, struct buf *bp)
 }
 
 void
-apfs_obj_init(obj_phys_t *obj, oid_t oid, uint64_t xid, uint32_t type,
+apfs_obj_init(void *object, oid_t oid, uint64_t xid, uint32_t type,
     uint32_t subtype)
 {
+	obj_phys_t *obj = (obj_phys_t *)object;
+
 	if (obj == NULL)
 		return;
 
@@ -2364,9 +2366,9 @@ out:
 }
 
 struct apfs_btree_entry_ref {
-	const void *key;
+	void *key;
 	size_t key_len;
-	const void *val;
+	void *val;
 	size_t val_len;
 };
 
@@ -2428,6 +2430,20 @@ apfs_btree_write_node_entries(struct apfsmount *amp, void *node_buf, uint16_t fl
 	}
 
 	return 0;
+}
+
+static void
+apfs_btree_free_entry_refs(struct apfs_btree_entry_ref *entries, uint32_t count)
+{
+	if (entries == NULL)
+		return;
+	for (uint32_t k = 0; k < count; k++) {
+		if (entries[k].key != NULL && entries[k].key_len > 0)
+			kmem_free(entries[k].key, entries[k].key_len);
+		if (entries[k].val != NULL && entries[k].val_len > 0)
+			kmem_free(entries[k].val, entries[k].val_len);
+	}
+	kmem_free(entries, sizeof(*entries) * count);
 }
 
 /* B-Tree Insertion with COW Cascade & Node Splitting */
@@ -2586,11 +2602,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			    &k_ptr, &k_sz, &v_ptr, &v_sz);
 			if (error != 0) {
 				brelse(bp, 0);
-				for (uint32_t k = 0; k < i; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, i);
 				return error;
 			}
 		}
@@ -2613,22 +2625,14 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 	apfs_paddr_t new_leaf_paddr;
 	error = apfs_tx_alloc_block(tx, 1, &new_leaf_paddr);
 	if (error != 0) {
-		for (uint32_t k = 0; k < new_nkeys; k++) {
-			kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-			kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-		}
-		kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+		apfs_btree_free_entry_refs(all_entries, new_nkeys);
 		return error;
 	}
 
 	struct buf *new_bp;
 	error = apfs_getblk(amp, new_leaf_paddr, &new_bp);
 	if (error != 0) {
-		for (uint32_t k = 0; k < new_nkeys; k++) {
-			kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-			kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-		}
-		kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+		apfs_btree_free_entry_refs(all_entries, new_nkeys);
 		return error;
 	}
 
@@ -2645,11 +2649,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		apfs_obj_set_cksum(amp, new_leaf);
 		error = apfs_bwrite(amp, new_leaf_paddr, new_bp);
 		if (error != 0) {
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 
@@ -2661,11 +2661,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 			error = apfs_bread(amp, old_parent_paddr, &bp);
 			if (error != 0) {
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
@@ -2678,22 +2674,14 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			error = apfs_tx_alloc_block(tx, 1, &new_parent_paddr);
 			if (error != 0) {
 				brelse(bp, 0);
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
 			error = apfs_getblk(amp, new_parent_paddr, &new_bp);
 			if (error != 0) {
 				brelse(bp, 0);
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
@@ -2731,11 +2719,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 			error = apfs_bwrite(amp, new_parent_paddr, new_bp);
 			if (error != 0) {
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
@@ -2745,22 +2729,14 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		if (omap_oid != 0 && *tree_oid != omap_oid) {
 			error = apfs_omap_update(tx, omap_oid, *tree_oid, child_paddr);
 			if (error != 0) {
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 		} else {
 			*tree_oid = (oid_t)child_paddr;
 		}
 
-		for (uint32_t k = 0; k < new_nkeys; k++) {
-			kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-			kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-		}
-		kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+		apfs_btree_free_entry_refs(all_entries, new_nkeys);
 		return 0;
 	}
 
@@ -2773,61 +2749,37 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		apfs_paddr_t left_paddr, right_paddr, new_root_paddr;
 		error = apfs_tx_alloc_block(tx, 1, &left_paddr);
 		if (error != 0) {
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 		error = apfs_tx_alloc_block(tx, 1, &right_paddr);
 		if (error != 0) {
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 		error = apfs_tx_alloc_block(tx, 1, &new_root_paddr);
 		if (error != 0) {
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 
 		struct buf *left_bp, *right_bp, *root_bp;
 		error = apfs_getblk(amp, left_paddr, &left_bp);
 		if (error != 0) {
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 		error = apfs_getblk(amp, right_paddr, &right_bp);
 		if (error != 0) {
 			brelse(left_bp, 0);
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 		error = apfs_getblk(amp, new_root_paddr, &root_bp);
 		if (error != 0) {
 			brelse(left_bp, 0);
 			brelse(right_bp, 0);
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 
@@ -2883,11 +2835,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		} else {
 			*tree_oid = (oid_t)new_root_paddr;
 		}
-		for (uint32_t k = 0; k < new_nkeys; k++) {
-			kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-			kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-		}
-		kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+		apfs_btree_free_entry_refs(all_entries, new_nkeys);
 		return error;
 	} else {
 		/* Non-root leaf split */
@@ -2896,11 +2844,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		error = apfs_tx_alloc_block(tx, 1, &right_paddr);
 		if (error != 0) {
 			brelse(new_bp, 0);
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 
@@ -2908,11 +2852,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		error = apfs_getblk(amp, right_paddr, &right_bp);
 		if (error != 0) {
 			brelse(new_bp, 0);
-			for (uint32_t k = 0; k < new_nkeys; k++) {
-				kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-				kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-			}
-			kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
 			return error;
 		}
 
@@ -2948,11 +2888,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			error = apfs_bread(amp, old_parent_paddr, &bp);
 			if (error != 0) {
 				kmem_free(split_pivot_key, split_pivot_key_len);
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
@@ -3001,34 +2937,18 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			apfs_paddr_t new_p_paddr;
 			error = apfs_tx_alloc_block(tx, 1, &new_p_paddr);
 			if (error != 0) {
-				for (uint32_t k = 0; k < new_p_nkeys; k++) {
-					kmem_free((void *)p_entries[k].key, p_entries[k].key_len);
-					kmem_free((void *)p_entries[k].val, p_entries[k].val_len);
-				}
-				kmem_free(p_entries, sizeof(*p_entries) * new_p_nkeys);
+				apfs_btree_free_entry_refs(p_entries, new_p_nkeys);
 				kmem_free(split_pivot_key, split_pivot_key_len);
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
 			struct buf *new_p_bp;
 			error = apfs_getblk(amp, new_p_paddr, &new_p_bp);
 			if (error != 0) {
-				for (uint32_t k = 0; k < new_p_nkeys; k++) {
-					kmem_free((void *)p_entries[k].key, p_entries[k].key_len);
-					kmem_free((void *)p_entries[k].val, p_entries[k].val_len);
-				}
-				kmem_free(p_entries, sizeof(*p_entries) * new_p_nkeys);
+				apfs_btree_free_entry_refs(p_entries, new_p_nkeys);
 				kmem_free(split_pivot_key, split_pivot_key_len);
-				for (uint32_t k = 0; k < new_nkeys; k++) {
-					kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-					kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-				}
-				kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+				apfs_btree_free_entry_refs(all_entries, new_nkeys);
 				return error;
 			}
 
@@ -3051,11 +2971,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 				child_paddr = new_p_paddr;
 				child_was_split = false;
-				for (uint32_t k = 0; k < new_p_nkeys; k++) {
-					kmem_free((void *)p_entries[k].key, p_entries[k].key_len);
-					kmem_free((void *)p_entries[k].val, p_entries[k].val_len);
-				}
-				kmem_free(p_entries, sizeof(*p_entries) * new_p_nkeys);
+				apfs_btree_free_entry_refs(p_entries, new_p_nkeys);
 			} else {
 				/* Parent also needs to split */
 				brelse(new_p_bp, 0);
@@ -3121,11 +3037,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 					child_paddr = p_root_paddr;
 					child_was_split = false;
 				}
-				for (uint32_t k = 0; k < new_p_nkeys; k++) {
-					kmem_free((void *)p_entries[k].key, p_entries[k].key_len);
-					kmem_free((void *)p_entries[k].val, p_entries[k].val_len);
-				}
-				kmem_free(p_entries, sizeof(*p_entries) * new_p_nkeys);
+				apfs_btree_free_entry_refs(p_entries, new_p_nkeys);
 			}
 		}
 
@@ -3135,11 +3047,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		} else {
 			*tree_oid = (oid_t)child_paddr;
 		}
-		for (uint32_t k = 0; k < new_nkeys; k++) {
-			kmem_free((void *)all_entries[k].key, all_entries[k].key_len);
-			kmem_free((void *)all_entries[k].val, all_entries[k].val_len);
-		}
-		kmem_free(all_entries, sizeof(*all_entries) * new_nkeys);
+		apfs_btree_free_entry_refs(all_entries, new_nkeys);
 		return error;
 	}
 }
@@ -4007,7 +3915,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 	/* 2. Write all modified CIB blocks */
 	for (uint32_t j = 0; j < num_cibs; j++) {
 		chunk_info_block_phys_t *cib = cibs[j].cibm_data;
-		apfs_obj_init(&cib->cib_o, (oid_t)cibs[j].cibm_new_paddr, tx->tx_xid,
+		apfs_obj_init(cib, (oid_t)cibs[j].cibm_new_paddr, tx->tx_xid,
 		    OBJ_SPACEMAN_CIB | OBJ_PHYSICAL, 0);
 
 		for (uint32_t i = 0; i < num_chunks; i++) {
@@ -4038,7 +3946,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 	/* 3. Write Space Manager block */
 	new_sm = (spaceman_phys_t *)kmem_alloc(amp->am_block_size, KM_SLEEP);
 	memcpy(new_sm, sm, amp->am_block_size);
-	apfs_obj_init(&new_sm->o, le64toh(amp->am_nx.nx_spaceman_oid), tx->tx_xid,
+	apfs_obj_init(new_sm, le64toh(amp->am_nx.nx_spaceman_oid), tx->tx_xid,
 	    OBJ_SPACEMAN | OBJ_EPHEMERAL, 0);
 
 	uint64_t total_freed = 0;
@@ -4916,7 +4824,7 @@ int
 apfs_truncate_file(struct apfsmount *amp, struct apfsnode *apnode, uint64_t new_size)
 {
 	apfs_tx_t tx;
-	oid_t root_tree_oid, omap_oid;
+	oid_t root_tree_oid;
 	int error;
 
 	if (amp == NULL || apnode == NULL)
@@ -4927,7 +4835,6 @@ apfs_truncate_file(struct apfsmount *amp, struct apfsnode *apnode, uint64_t new_
 		return error;
 
 	root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
-	omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
 
 	if (new_size < apnode->a_ino.uncompressed_size) {
 		apfs_truncate_file_extents(&tx, apnode->a_oid, new_size, &root_tree_oid);
