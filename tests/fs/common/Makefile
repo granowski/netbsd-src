@@ -4,7 +4,7 @@
 .include <bsd.own.mk>
 
 LIB=	vfstest
-SRCS=	fstest_ext2fs.c fstest_ffs.c fstest_lfs.c fstest_msdosfs.c	\
+SRCS=	fstest_apfs.c fstest_ext2fs.c fstest_ffs.c fstest_lfs.c fstest_msdosfs.c	\
 	fstest_nfs.c fstest_puffs.c fstest_rumpfs.c fstest_sysvbfs.c	\
 	fstest_tmpfs.c fstest_udf.c fstest_v7fs.c
 

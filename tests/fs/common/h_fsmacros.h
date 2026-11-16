@@ -49,6 +49,7 @@ int _fs_##_fstest_delfs(const atf_tc_t *, void *);			\
 int _fs_##_fstest_mount(const atf_tc_t *, void *, const char *, int);	\
 int _fs_##_fstest_unmount(const atf_tc_t *, const char *, int);
 
+FSPROTOS(apfs);
 FSPROTOS(ext2fs);
 FSPROTOS(ffs);
 FSPROTOS(ffslog);

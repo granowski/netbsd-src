@@ -6,7 +6,7 @@ TESTSDIR=	${TESTSBASE}/fs
 
 SUBDIR+= 	common .WAIT
 
-TESTS_SUBDIRS+=	ffs fifofs psshfs puffs
+TESTS_SUBDIRS+=	apfs ffs fifofs psshfs puffs
 TESTS_SUBDIRS+=	vfs
 
 .if ${MKCD9660FS} != "no"

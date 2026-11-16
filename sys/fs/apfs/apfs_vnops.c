@@ -41,6 +41,9 @@ const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
 	{ &vop_pathconf_desc, genfs_pathconf },
 	{ &vop_strategy_desc, apfs_vop_strategy },
 	{ &vop_bmap_desc, apfs_vop_bmap },
+	{ &vop_rename_desc, apfs_vop_rename },
+	{ &vop_symlink_desc, apfs_vop_symlink },
+	{ &vop_readlink_desc, apfs_vop_readlink },
 	{ &vop_getpages_desc, genfs_getpages },
 	{ &vop_putpages_desc, genfs_putpages },
 	{ NULL, NULL }
@@ -328,9 +331,47 @@ apfs_vop_setattr(void *v)
 		if (error != 0)
 			return error;
 		uvm_vnp_setsize(vp, vap->va_size);
+		vp->v_size = vap->va_size;
 	}
 
-	return 0;
+	bool attr_changed = false;
+	if (vap->va_uid != (uid_t)VNOVAL) {
+		apnode->a_ino.owner = vap->va_uid;
+		attr_changed = true;
+	}
+	if (vap->va_gid != (gid_t)VNOVAL) {
+		apnode->a_ino.group = vap->va_gid;
+		attr_changed = true;
+	}
+	if (vap->va_mode != (mode_t)VNOVAL) {
+		apnode->a_ino.mode = (apnode->a_ino.mode & ~07777) | (vap->va_mode & 07777);
+		attr_changed = true;
+	}
+	if (vap->va_atime.tv_sec != VNOVAL) {
+		apnode->a_ino.access_time = (uint64_t)vap->va_atime.tv_sec * 1000000000ULL + vap->va_atime.tv_nsec;
+		attr_changed = true;
+	}
+	if (vap->va_mtime.tv_sec != VNOVAL) {
+		apnode->a_ino.mod_time = (uint64_t)vap->va_mtime.tv_sec * 1000000000ULL + vap->va_mtime.tv_nsec;
+		attr_changed = true;
+	}
+
+	if (attr_changed) {
+		struct timespec ts;
+		nanotime(&ts);
+		apnode->a_ino.change_time = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+		apfs_tx_t tx;
+		error = apfs_tx_begin(amp, &tx);
+		if (error == 0) {
+			error = apfs_update_inode(&tx, apnode);
+			if (error == 0)
+				error = apfs_tx_commit(&tx);
+			else
+				apfs_tx_abort(&tx);
+		}
+	}
+
+	return error;
 }
 
 int
@@ -426,13 +467,28 @@ apfs_vop_write(void *v)
 	struct mount *mp = vp->v_mount;
 	struct buf *bp;
 	apfs_paddr_t paddr;
+	apfs_tx_t tx;
 	int error = 0;
+	int ioflag = ap->a_ioflag;
 
 	if (mp->mnt_flag & MNT_RDONLY)
 		return EROFS;
 
 	if (vp->v_type != VREG)
 		return EISDIR;
+
+	if (uio->uio_resid == 0)
+		return 0;
+
+	if (ioflag & IO_APPEND)
+		uio->uio_offset = apnode->a_ino.uncompressed_size;
+
+	error = apfs_tx_begin(amp, &tx);
+	if (error != 0)
+		return error;
+
+	oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
+	oid_t omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
 
 	while (uio->uio_resid > 0) {
 		off_t offset = uio->uio_offset;
@@ -441,57 +497,73 @@ apfs_vop_write(void *v)
 		if (bytes_to_write > uio->uio_resid)
 			bytes_to_write = uio->uio_resid;
 
-		apfs_tx_t tx;
-		error = apfs_tx_begin(amp, &tx);
+		uint64_t block_logical = (uint64_t)(offset - off_in_block);
+
+		/* Look up existing extent to preserve partial block data if needed */
+		j_extent_key_t ext_key, found_key;
+		j_phys_ext_val_t ext_val, found_val;
+		ext_key.obj_id_and_type = htole64((apnode->a_oid & OBJ_ID_MASK) |
+		    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
+		ext_key.logical_addr = htole64(block_logical);
+
+		bool had_existing = false;
+		apfs_paddr_t old_phys_block = 0;
+		if (apfs_btree_search(amp, omap_oid, root_tree_oid,
+		    &ext_key, sizeof(ext_key), &found_val, sizeof(found_val),
+		    &found_key, sizeof(found_key), NULL) == 0) {
+			uint64_t f_len = le64toh(found_val.len_and_flags) & EXTENT_LEN_MASK;
+			uint64_t f_start = le64toh(found_key.logical_addr);
+			if (block_logical >= f_start && block_logical < f_start + f_len) {
+				had_existing = true;
+				old_phys_block = le64toh(found_val.phys_addr) +
+				    (block_logical - f_start) / amp->am_block_size;
+			}
+		}
+
+		error = apfs_tx_alloc_block(&tx, 1, &paddr);
 		if (error != 0)
 			break;
 
-		error = apfs_tx_alloc_block(&tx, 1, &paddr);
-		if (error != 0) {
-			apfs_tx_abort(&tx);
-			break;
-		}
-
 		error = apfs_getblk(amp, paddr, &bp);
-		if (error != 0) {
-			apfs_tx_abort(&tx);
+		if (error != 0)
 			break;
+
+		if (off_in_block != 0 || bytes_to_write < amp->am_block_size) {
+			if (had_existing) {
+				struct buf *old_bp;
+				if (apfs_bread(amp, old_phys_block, &old_bp) == 0) {
+					memcpy(bp->b_data, old_bp->b_data, amp->am_block_size);
+					brelse(old_bp, 0);
+				} else {
+					memset(bp->b_data, 0, amp->am_block_size);
+				}
+			} else {
+				memset(bp->b_data, 0, amp->am_block_size);
+			}
 		}
 
-		memset(bp->b_data, 0, amp->am_block_size);
 		error = uiomove((uint8_t *)bp->b_data + off_in_block, bytes_to_write, uio);
 		if (error != 0) {
 			brelse(bp, 0);
-			apfs_tx_abort(&tx);
 			break;
 		}
 
 		error = apfs_bwrite(amp, paddr, bp);
-		if (error != 0) {
-			apfs_tx_abort(&tx);
+		if (error != 0)
 			break;
+
+		if (had_existing && old_phys_block != 0) {
+			apfs_free_queue_add(&tx, old_phys_block, 1);
 		}
 
 		/* Insert extent record */
-		j_extent_key_t ext_key;
-		j_phys_ext_val_t ext_val;
-
-		ext_key.obj_id_and_type = htole64((apnode->a_oid & OBJ_ID_MASK) |
-		    ((uint64_t)APFS_TYPE_EXTENT << OBJ_TYPE_SHIFT));
-		ext_key.logical_addr = htole64((uint64_t)(offset - off_in_block));
-
 		ext_val.len_and_flags = htole64(amp->am_block_size & EXTENT_LEN_MASK);
 		ext_val.phys_addr = htole64((uint64_t)paddr);
 
-		oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
-		oid_t omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
-
 		error = apfs_btree_insert_record(&tx, omap_oid, &root_tree_oid,
 		    &ext_key, sizeof(ext_key), &ext_val, sizeof(ext_val));
-		if (error != 0) {
-			apfs_tx_abort(&tx);
+		if (error != 0)
 			break;
-		}
 
 		amp->am_sb.apfs_root_tree_oid = htole64(root_tree_oid);
 
@@ -499,13 +571,33 @@ apfs_vop_write(void *v)
 		if (offset + bytes_to_write > apnode->a_ino.uncompressed_size) {
 			apnode->a_ino.uncompressed_size = offset + bytes_to_write;
 		}
-
-		error = apfs_tx_commit(&tx);
-		if (error != 0)
-			break;
 	}
 
-	return error;
+	if (error != 0) {
+		apfs_tx_abort(&tx);
+		return error;
+	}
+
+	struct timespec ts;
+	nanotime(&ts);
+	uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+	apnode->a_ino.mod_time = now_ns;
+	apnode->a_ino.change_time = now_ns;
+
+	error = apfs_update_inode(&tx, apnode);
+	if (error != 0) {
+		apfs_tx_abort(&tx);
+		return error;
+	}
+
+	error = apfs_tx_commit(&tx);
+	if (error != 0)
+		return error;
+
+	uvm_vnp_setsize(vp, apnode->a_ino.uncompressed_size);
+	vp->v_size = apnode->a_ino.uncompressed_size;
+
+	return 0;
 }
 
 int
@@ -832,6 +924,8 @@ apfs_vop_strategy(void *v)
 	struct vop_strategy_args *ap = v;
 	struct buf *bp = ap->a_bp;
 	struct vnode *vp = ap->a_vp;
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = apnode->a_amp;
 	int error;
 
 	if (vp->v_type == VBLK || vp->v_type == VCHR)
@@ -843,7 +937,8 @@ apfs_vop_strategy(void *v)
 	}
 
 	if (bp->b_blkno == bp->b_lblkno) {
-		error = VOP_BMAP(vp, bp->b_lblkno, &vp, &bp->b_blkno, NULL);
+		struct vnode *devvp;
+		error = VOP_BMAP(vp, bp->b_lblkno, &devvp, &bp->b_blkno, NULL);
 		if (error) {
 			bp->b_error = error;
 			biodone(bp);
@@ -856,7 +951,7 @@ apfs_vop_strategy(void *v)
 		}
 	}
 
-	return VOP_STRATEGY(vp, bp);
+	return VOP_STRATEGY(amp->am_devvp, bp);
 }
 
 int
@@ -909,4 +1004,148 @@ apfs_vop_bmap(void *v)
 	}
 
 	return 0;
+}
+
+int
+apfs_vop_symlink(void *v)
+{
+	struct vop_symlink_v3_args *ap = v;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode **vpp = ap->a_vpp;
+	struct componentname *cnp = ap->a_cnp;
+	struct vattr *vap = ap->a_vap;
+	const char *target = ap->a_target;
+	struct apfsnode *dnode = VTOA(dvp);
+	struct apfsmount *amp = dnode->a_amp;
+	char name_buf[APFS_MODIFIED_NAMELEN + 1];
+	oid_t new_ino_oid;
+	int error;
+
+	if (dvp->v_mount->mnt_flag & MNT_RDONLY) {
+		vput(dvp);
+		return EROFS;
+	}
+
+	if (cnp->cn_namelen > APFS_MODIFIED_NAMELEN) {
+		vput(dvp);
+		return ENAMETOOLONG;
+	}
+
+	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
+	name_buf[cnp->cn_namelen] = '\0';
+
+	error = apfs_create_symlink(amp, dnode->a_oid, name_buf, target,
+	    vap->va_uid, vap->va_gid, &new_ino_oid);
+	if (error != 0) {
+		vput(dvp);
+		return error;
+	}
+
+	if (vpp != NULL) {
+		error = VFS_VGET(dvp->v_mount, new_ino_oid, 0, vpp);
+	}
+
+	vput(dvp);
+	return error;
+}
+
+int
+apfs_vop_readlink(void *v)
+{
+	struct vop_readlink_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct uio *uio = ap->a_uio;
+	struct apfsnode *apnode = VTOA(vp);
+	struct apfsmount *amp = apnode->a_amp;
+	j_extent_key_t key, found_key;
+	j_phys_ext_val_t val;
+	struct buf *bp;
+	int error;
+
+	if (vp->v_type != VLNK)
+		return EINVAL;
+
+	key.obj_id_and_type = htole64(APFS_KEY(apnode->a_oid, APFS_TYPE_EXTENT));
+	key.logical_addr = htole64(0);
+
+	error = apfs_btree_search(amp,
+	    le64toh(amp->am_sb.apfs_omap_oid),
+	    le64toh(amp->am_sb.apfs_root_tree_oid), &key,
+	    sizeof(key), &val, sizeof(val), &found_key,
+	    sizeof(found_key), NULL);
+	if (error != 0)
+		return error;
+
+	uint64_t phys_addr = le64toh(val.phys_addr);
+	size_t len = apnode->a_ino.uncompressed_size;
+	if (len > uio->uio_resid)
+		len = uio->uio_resid;
+
+	error = apfs_bread(amp, phys_addr, &bp);
+	if (error != 0)
+		return error;
+
+	error = uiomove(bp->b_data, len, uio);
+	brelse(bp, 0);
+	return error;
+}
+
+int
+apfs_vop_rename(void *v)
+{
+	struct vop_rename_args *ap = v;
+	struct vnode *fdvp = ap->a_fdvp;
+	struct vnode *fvp = ap->a_fvp;
+	struct componentname *fcnp = ap->a_fcnp;
+	struct vnode *tdvp = ap->a_tdvp;
+	struct vnode *tvp = ap->a_tvp;
+	struct componentname *tcnp = ap->a_tcnp;
+	struct apfsnode *fdnode = VTOA(fdvp);
+	struct apfsnode *tdnode = VTOA(tdvp);
+	struct apfsnode *fnode = VTOA(fvp);
+	struct apfsnode *tnode = tvp ? VTOA(tvp) : NULL;
+	struct apfsmount *amp = fdnode->a_amp;
+	char from_name[APFS_MODIFIED_NAMELEN + 1];
+	char to_name[APFS_MODIFIED_NAMELEN + 1];
+	int error = 0;
+
+	if (fvp->v_mount != tdvp->v_mount || (tvp && fvp->v_mount != tvp->v_mount)) {
+		error = EXDEV;
+		goto out;
+	}
+
+	if (fcnp->cn_namelen > APFS_MODIFIED_NAMELEN || tcnp->cn_namelen > APFS_MODIFIED_NAMELEN) {
+		error = ENAMETOOLONG;
+		goto out;
+	}
+
+	memcpy(from_name, fcnp->cn_nameptr, fcnp->cn_namelen);
+	from_name[fcnp->cn_namelen] = '\0';
+	memcpy(to_name, tcnp->cn_nameptr, tcnp->cn_namelen);
+	to_name[tcnp->cn_namelen] = '\0';
+
+	if (tvp != NULL) {
+		if (fvp->v_type == VDIR && tvp->v_type != VDIR) {
+			error = ENOTDIR;
+			goto out;
+		}
+		if (fvp->v_type != VDIR && tvp->v_type == VDIR) {
+			error = EISDIR;
+			goto out;
+		}
+	}
+
+	error = apfs_rename_file(amp, fdnode->a_oid, from_name,
+	    tdnode->a_oid, to_name, fnode, tnode);
+
+out:
+	if (tdvp == tvp)
+		vrele(tdvp);
+	else
+		vput(tdvp);
+	if (tvp)
+		vput(tvp);
+	vrele(fdvp);
+	vrele(fvp);
+	return error;
 }

@@ -655,7 +655,10 @@ int apfs_omap_update(apfs_tx_t *, oid_t, oid_t, apfs_paddr_t);
 /* Filesystem Operations Helpers */
 int apfs_create_file(struct apfsmount *, oid_t, const char *, mode_t, uid_t, gid_t, oid_t *);
 int apfs_write_file_extent(struct apfsmount *, oid_t, uint64_t, uint64_t, apfs_paddr_t);
+int apfs_update_inode(apfs_tx_t *, struct apfsnode *);
 int apfs_create_dir(struct apfsmount *, oid_t, const char *, mode_t, uid_t, gid_t, oid_t *);
+int apfs_create_symlink(struct apfsmount *, oid_t, const char *, const char *, uid_t, gid_t, oid_t *);
+int apfs_rename_file(struct apfsmount *, oid_t, const char *, oid_t, const char *, struct apfsnode *, struct apfsnode *);
 int apfs_remove_file(struct apfsmount *, oid_t, const char *, oid_t);
 int apfs_remove_dir(struct apfsmount *, oid_t, const char *, oid_t);
 int apfs_truncate_file(struct apfsmount *, struct apfsnode *, uint64_t);
@@ -690,6 +693,9 @@ int apfs_vop_inactive(void *);
 int apfs_vop_reclaim(void *);
 int apfs_vop_strategy(void *);
 int apfs_vop_bmap(void *);
+int apfs_vop_rename(void *);
+int apfs_vop_symlink(void *);
+int apfs_vop_readlink(void *);
 #endif /* _KERNEL */
 
 #endif /* _FS_APFS_APFS_H_ */
