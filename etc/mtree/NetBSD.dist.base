@@ -236,6 +236,7 @@
 ./usr/include/fido
 ./usr/include/filecorefs
 ./usr/include/fs
+./usr/include/fs/apfs
 ./usr/include/fs/autofs
 ./usr/include/fs/efs
 ./usr/include/fs/hfs
