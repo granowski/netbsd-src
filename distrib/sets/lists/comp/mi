@@ -981,6 +981,7 @@
 ./usr/include/fnmatch.h				comp-c-include
 ./usr/include/form.h				comp-c-include
 ./usr/include/frame.h				comp-obsolete		obsolete
+./usr/include/fs/apfs/apfs.h			comp-c-include
 ./usr/include/fs/autofs/autofs_ioctl.h		comp-c-include
 ./usr/include/fs/autofs/autofs_mount.h		comp-c-include
 ./usr/include/fs/efs/efs.h			comp-c-include

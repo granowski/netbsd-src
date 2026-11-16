@@ -409,12 +409,14 @@
 ./sbin/luactl					base-sysutil-root
 ./sbin/lvm					base-lvm-root		lvm
 ./sbin/mbrlabel					base-sysutil-root
+./sbin/mkfs.apfs				base-fs-root		apfs
 ./sbin/mknod					base-sysutil-root
 ./sbin/modload					base-sysutil-root
 ./sbin/modstat					base-sysutil-root
 ./sbin/modunload				base-sysutil-root
 ./sbin/mount					base-sysutil-root
 ./sbin/mount_ados				base-adosfs-root	adosfs
+./sbin/mount_apfs				base-fs-root		apfs
 ./sbin/mount_autofs				base-sysutil-root	autofs
 ./sbin/mount_cd9660				base-sysutil-root	cd9660fs
 ./sbin/mount_chfs				base-sysutil-root	chfs
@@ -451,6 +453,7 @@
 ./sbin/mountd					base-obsolete		obsolete
 ./sbin/newbtconf				base-sysutil-root
 ./sbin/newfs					base-sysutil-root
+./sbin/newfs_apfs				base-fs-root		apfs
 ./sbin/newfs_ext2fs				base-sysutil-root	ext2fs
 ./sbin/newfs_lfs				base-sysutil-root	lfs
 ./sbin/newfs_msdos				base-sysutil-root	msdosfs

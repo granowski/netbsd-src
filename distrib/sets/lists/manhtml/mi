@@ -2660,6 +2660,7 @@
 ./usr/share/man/html8/mfs.html			man-sys-htmlman		html
 ./usr/share/man/html8/mk-amd-map.html		man-amd-htmlman		html
 ./usr/share/man/html8/mkalias.html		man-nis-htmlman		yp,html
+./usr/share/man/html8/mkfs.apfs.html		man-sysutil-htmlman	apfs,html
 ./usr/share/man/html8/mknetid.html		man-nis-htmlman		yp,html
 ./usr/share/man/html8/mknod.html		man-sysutil-htmlman	html
 ./usr/share/man/html8/mld6query.html		man-netutil-htmlman	use_inet6,html
@@ -2672,6 +2673,7 @@
 ./usr/share/man/html8/mount.html		man-sysutil-htmlman	html
 ./usr/share/man/html8/mount_9p.html		man-puffs-htmlman	html
 ./usr/share/man/html8/mount_ados.html		man-adosfs-htmlman	adosfs,html
+./usr/share/man/html8/mount_apfs.html		man-sysutil-htmlman	apfs,html
 ./usr/share/man/html8/mount_autofs.html		man-sysutil-htmlman	autofs,html
 ./usr/share/man/html8/mount_cd9660.html		man-sysutil-htmlman	cd9660fs,html
 ./usr/share/man/html8/mount_chfs.html		man-sysutil-htmlman	chfs,html
@@ -2728,6 +2730,7 @@
 ./usr/share/man/html8/netgroup_mkdb.html	man-nis-htmlman		html
 ./usr/share/man/html8/newbtconf.html		man-sysutil-htmlman	html
 ./usr/share/man/html8/newfs.html		man-sysutil-htmlman	html
+./usr/share/man/html8/newfs_apfs.html		man-sysutil-htmlman	apfs,html
 ./usr/share/man/html8/newfs_ext2fs.html		man-sysutil-htmlman	ext2fs,html
 ./usr/share/man/html8/newfs_lfs.html		man-sysutil-htmlman	lfs,html
 ./usr/share/man/html8/newfs_msdos.html		man-sysutil-htmlman	msdosfs,html

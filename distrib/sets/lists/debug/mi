@@ -383,6 +383,7 @@
 ./usr/libdata/debug/sbin/modunload.debug	comp-sysutil-debug	debug
 ./usr/libdata/debug/sbin/mount.debug		comp-sysutil-debug	debug
 ./usr/libdata/debug/sbin/mount_ados.debug	comp-adosfs-debug	adosfs,debug
+./usr/libdata/debug/sbin/mount_apfs.debug	comp-sysutil-debug	debug
 ./usr/libdata/debug/sbin/mount_autofs.debug	comp-sysutil-debug	autofs,debug
 ./usr/libdata/debug/sbin/mount_cd9660.debug	comp-sysutil-debug	cd9660fs,debug
 ./usr/libdata/debug/sbin/mount_chfs.debug	comp-sysutil-debug	chfs,debug
@@ -413,6 +414,7 @@
 ./usr/libdata/debug/sbin/mount_union.debug	comp-miscfs-debug	unionfs,debug
 ./usr/libdata/debug/sbin/mount_v7fs.debug	comp-sysutil-debug	v7fs,debug
 ./usr/libdata/debug/sbin/newfs.debug		comp-sysutil-debug	debug
+./usr/libdata/debug/sbin/newfs_apfs.debug	comp-sysutil-debug	debug
 ./usr/libdata/debug/sbin/newfs_ext2fs.debug	comp-sysutil-debug	ext2fs,debug
 ./usr/libdata/debug/sbin/newfs_lfs.debug	comp-sysutil-debug	lfs,debug
 ./usr/libdata/debug/sbin/newfs_msdos.debug	comp-sysutil-debug	msdosfs,debug
@@ -1698,6 +1700,7 @@
 ./usr/libdata/debug/usr/tests/dev/scsipi/t_cd.debug			tests-fs-debug		debug,atf,rump
 ./usr/libdata/debug/usr/tests/dev/sysmon/t_swwdog.debug			tests-fs-debug		debug,atf,rump
 ./usr/libdata/debug/usr/tests/dev/usb/t_hid.debug			tests-fs-debug		debug,atf,rump
+./usr/libdata/debug/usr/tests/fs/apfs/t_vfs_rw.debug			tests-fs-debug		debug,atf,rump
 ./usr/libdata/debug/usr/tests/fs/cd9660/h_hexdump_r.debug		tests-fs-debug		cd9660fs,debug,atf,rump
 ./usr/libdata/debug/usr/tests/fs/ffs/h_ffs_server.debug			tests-fs-debug		debug,atf,rump
 ./usr/libdata/debug/usr/tests/fs/ffs/h_quota2_server.debug		tests-obsolete		obsolete,compattestfile
@@ -2622,6 +2625,7 @@
 ./usr/libdata/debug/usr/tests/usr.bin/id/h_id.debug			tests-usr.bin-debug	debug,atf,compattestfile
 ./usr/libdata/debug/usr/tests/usr.bin/mkdep/h_findcc.debug		tests-usr.bin-debug	debug,atf,compattestfile
 ./usr/libdata/debug/usr/tests/usr.bin/tar/h_tar.debug			tests-usr.bin-debug	debug,atf,compattestfile
+./usr/libdata/debug/usr/tests/usr.sbin/fstyp/t_apfs.debug		tests-usr.sbin-debug	debug,atf,compattestfile
 ./usr/libdata/debug/usr/tests/usr.sbin/inetd/t_inetd.debug		tests-usr.sbin-debug	debug,atf,compattestfile
 ./usr/libdata/debug/usr/tests/usr.sbin/inetd/test_server.debug		tests-usr.sbin-debug	debug,atf,compattestfile
 ./usr/libdata/debug/usr/tests/util/df/h_df.debug			tests-obsolete		obsolete,compattestfile

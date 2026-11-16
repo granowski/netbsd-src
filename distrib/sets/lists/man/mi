@@ -3095,6 +3095,7 @@
 ./usr/share/man/cat8/mipsco/makedev.0		man-obsolete		obsolete
 ./usr/share/man/cat8/mk-amd-map.0		man-amd-catman		.cat
 ./usr/share/man/cat8/mkalias.0			man-nis-catman		yp,.cat
+./usr/share/man/cat8/mkfs.apfs.0		man-sysutil-catman	apfs,.cat
 ./usr/share/man/cat8/mknetid.0			man-nis-catman		yp,.cat
 ./usr/share/man/cat8/mknod.0			man-sysutil-catman	.cat
 ./usr/share/man/cat8/mld6query.0		man-netutil-catman	use_inet6,.cat
@@ -3109,6 +3110,7 @@
 ./usr/share/man/cat8/mount.0			man-sysutil-catman	.cat
 ./usr/share/man/cat8/mount_9p.0			man-puffs-catman	.cat
 ./usr/share/man/cat8/mount_ados.0		man-adosfs-catman	adosfs,.cat
+./usr/share/man/cat8/mount_apfs.0		man-sysutil-catman	apfs,.cat
 ./usr/share/man/cat8/mount_autofs.0		man-sysutil-catman	autofs,.cat
 ./usr/share/man/cat8/mount_cd9660.0		man-sysutil-catman	cd9660fs,.cat
 ./usr/share/man/cat8/mount_chfs.0		man-sysutil-catman	chfs,.cat
@@ -3178,6 +3180,7 @@
 ./usr/share/man/cat8/netwinder/makedev.0	man-obsolete		obsolete
 ./usr/share/man/cat8/newbtconf.0		man-sysutil-catman	.cat
 ./usr/share/man/cat8/newfs.0			man-sysutil-catman	.cat
+./usr/share/man/cat8/newfs_apfs.0		man-sysutil-catman	apfs,.cat
 ./usr/share/man/cat8/newfs_ext2fs.0		man-sysutil-catman	ext2fs,.cat
 ./usr/share/man/cat8/newfs_lfs.0		man-sysutil-catman	lfs,.cat
 ./usr/share/man/cat8/newfs_msdos.0		man-sysutil-catman	msdosfs,.cat
@@ -6591,6 +6594,7 @@
 ./usr/share/man/man8/mipsco/makedev.8		man-obsolete		obsolete
 ./usr/share/man/man8/mk-amd-map.8		man-amd-man		.man
 ./usr/share/man/man8/mkalias.8			man-nis-man		yp,.man
+./usr/share/man/man8/mkfs.apfs.8		man-sysutil-man		apfs,.man
 ./usr/share/man/man8/mknetid.8			man-nis-man		yp,.man
 ./usr/share/man/man8/mknod.8			man-sysutil-man		.man
 ./usr/share/man/man8/mld6query.8		man-netutil-man		use_inet6,.man
@@ -6605,6 +6609,7 @@
 ./usr/share/man/man8/mount.8			man-sysutil-man		.man
 ./usr/share/man/man8/mount_9p.8			man-puffs-man		.man
 ./usr/share/man/man8/mount_ados.8		man-adosfs-man		adosfs,.man
+./usr/share/man/man8/mount_apfs.8		man-sysutil-man		apfs,.man
 ./usr/share/man/man8/mount_autofs.8		man-sysutil-man		autofs,.man
 ./usr/share/man/man8/mount_cd9660.8		man-sysutil-man		cd9660fs,.man
 ./usr/share/man/man8/mount_chfs.8		man-sysutil-man		chfs,.man
@@ -6674,6 +6679,7 @@
 ./usr/share/man/man8/netwinder/makedev.8	man-obsolete		obsolete
 ./usr/share/man/man8/newbtconf.8		man-sysutil-man		.man
 ./usr/share/man/man8/newfs.8			man-sysutil-man		.man
+./usr/share/man/man8/newfs_apfs.8		man-sysutil-man		apfs,.man
 ./usr/share/man/man8/newfs_ext2fs.8		man-sysutil-man		ext2fs,.man
 ./usr/share/man/man8/newfs_lfs.8		man-sysutil-man		lfs,.man
 ./usr/share/man/man8/newfs_msdos.8		man-sysutil-man		msdosfs,.man
