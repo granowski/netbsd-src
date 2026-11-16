@@ -1562,32 +1562,22 @@ apfs_omap_object_paddr(struct apfsmount *amp, apfs_tx_t *tx, oid_t omap_oid,
 				return 0;
 			}
 		}
-		if (omap_oid == le64toh(amp->am_nx.nx_omap_oid)) {
-			for (uint32_t i = 0; i < tx->tx_map_count; i++) {
-				checkpoint_mapping_t *entry = &tx->tx_mappings[i];
+		for (uint32_t i = 0; i < tx->tx_map_count; i++) {
+			checkpoint_mapping_t *entry = &tx->tx_mappings[i];
 
-				if (le64toh(entry->cpm_oid) == omap_oid &&
-				    le64toh(entry->cpm_fs_oid) == 0) {
-					*paddrp = (apfs_paddr_t)le64toh(
-					    (uint64_t)entry->cpm_paddr);
-					return 0;
-				}
+			if (le64toh(entry->cpm_oid) == omap_oid) {
+				*paddrp = (apfs_paddr_t)le64toh(
+				    (uint64_t)entry->cpm_paddr);
+				return 0;
 			}
 		}
 	}
 
-	if (omap_oid == le64toh(amp->am_nx.nx_omap_oid)) {
-		error = apfs_checkpoint_lookup(amp, omap_oid, 0, &paddr);
-		if (error == ENOENT)
-			paddr = (apfs_paddr_t)omap_oid;
-		else if (error != 0)
-			return error;
-	} else {
-		error = apfs_omap_lookup_internal(amp, tx,
-		    le64toh(amp->am_nx.nx_omap_oid), omap_oid, xid, &paddr);
-		if (error != 0)
-			return error;
-	}
+	error = apfs_checkpoint_lookup(amp, omap_oid, 0, &paddr);
+	if (error == ENOENT)
+		paddr = (apfs_paddr_t)omap_oid;
+	else if (error != 0)
+		return error;
 
 	if (paddr < 0 ||
 	    (uint64_t)paddr >= le64toh(amp->am_nx.nx_block_count) ||

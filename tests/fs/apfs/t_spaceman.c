@@ -2074,7 +2074,7 @@ apfs_name_hash(const char *name, size_t len)
 }
 
 static int
-apfs_btree_cmp(const void *k1, const void *k2, uint32_t subtype)
+apfs_btree_cmp(const void *k1, const void *k2, uint32_t subtype __attribute__((unused)))
 {
     const j_key_t *jk1 = k1;
     const j_key_t *jk2 = k2;
@@ -2170,7 +2170,7 @@ apfs_btree_entry(struct apfsmount *amp, btree_node_phys_t *node,
 }
 
 static int
-apfs_btree_resolve_child(struct apfsmount *amp, oid_t omap_oid,
+apfs_btree_resolve_child(struct apfsmount *amp, oid_t omap_oid __attribute__((unused)),
     uint32_t tree_flags, oid_t child_oid, apfs_paddr_t *paddrp)
 {
     if (tree_flags & BTREE_PHYSICAL) {
@@ -2806,7 +2806,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 int
 apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
-    const void *key, size_t key_len)
+    const void *key, size_t key_len __attribute__((unused)))
 {
     struct apfsmount *amp;
     apfs_paddr_t root_paddr, curr_paddr;
