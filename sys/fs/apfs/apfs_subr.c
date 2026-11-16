@@ -3452,10 +3452,9 @@ apfs_omap_update(apfs_tx_t *tx, oid_t omap_oid, oid_t oid,
 	tree_oid = le64toh(omap->omap_tree_oid);
 	object_type = le32toh(omap->omap_o.o_type);
 	object_subtype = le32toh(omap->omap_o.o_subtype);
-	if (tree_oid == 0 ||
-	    (object_type & OBJ_STORAGE_MASK) != OBJ_EPHEMERAL) {
+	if (tree_oid == 0) {
 		brelse(bp, 0);
-		return EOPNOTSUPP;
+		return EINVAL;
 	}
 	omap_copy = kmem_alloc(amp->am_block_size, KM_SLEEP);
 	memcpy(omap_copy, bp->b_data, amp->am_block_size);
@@ -4047,13 +4046,12 @@ apfs_tx_stage_superblock(apfs_tx_t *tx)
 		return 0;
 
 	fs_oid = le64toh(amp->am_sb.apfs_o.o_oid);
-	omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
+	omap_oid = le64toh(amp->am_nx.nx_omap_oid);
 	type = le32toh(amp->am_sb.apfs_o.o_type);
 	subtype = le32toh(amp->am_sb.apfs_o.o_subtype);
 	if (fs_oid == 0 || omap_oid == 0 ||
-	    (type & OBJECT_TYPE_MASK) != OBJ_FS ||
-	    (type & OBJ_STORAGE_MASK) != OBJ_EPHEMERAL)
-		return EOPNOTSUPP;
+	    (type & OBJECT_TYPE_MASK) != OBJ_FS)
+		return EINVAL;
 
 	error = apfs_tx_alloc_block(tx, 1, &paddr);
 	if (error != 0)

@@ -11,7 +11,12 @@
 #include <sys/endian.h>
 
 #include <miscfs/genfs/genfs.h>
+#include <miscfs/genfs/genfs_node.h>
+#include <miscfs/fifofs/fifo.h>
+#include <miscfs/specfs/specdev.h>
 #include <fs/apfs/apfs.h>
+
+int apfs_vop_print(void *);
 
 /* Global vnode operation descriptors */
 int (**apfs_vnodeop_p)(void *);
@@ -24,26 +29,41 @@ const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
 	{ &vop_open_desc, apfs_vop_open },
 	{ &vop_close_desc, apfs_vop_close },
 	{ &vop_access_desc, apfs_vop_access },
+	{ &vop_accessx_desc, genfs_accessx },
 	{ &vop_getattr_desc, apfs_vop_getattr },
 	{ &vop_setattr_desc, apfs_vop_setattr },
 	{ &vop_read_desc, apfs_vop_read },
 	{ &vop_write_desc, apfs_vop_write },
+	{ &vop_fallocate_desc, genfs_eopnotsupp },
+	{ &vop_fdiscard_desc, genfs_eopnotsupp },
+	{ &vop_fcntl_desc, genfs_fcntl },
+	{ &vop_ioctl_desc, genfs_enoioctl },
+	{ &vop_poll_desc, genfs_poll },
+	{ &vop_kqfilter_desc, genfs_kqfilter },
+	{ &vop_revoke_desc, genfs_revoke },
+	{ &vop_mmap_desc, genfs_mmap },
 	{ &vop_fsync_desc, apfs_vop_fsync },
+	{ &vop_seek_desc, genfs_seek },
 	{ &vop_remove_desc, apfs_vop_remove },
+	{ &vop_link_desc, genfs_eopnotsupp },
+	{ &vop_rename_desc, apfs_vop_rename },
 	{ &vop_mkdir_desc, apfs_vop_mkdir },
 	{ &vop_rmdir_desc, apfs_vop_rmdir },
+	{ &vop_symlink_desc, apfs_vop_symlink },
 	{ &vop_readdir_desc, apfs_vop_readdir },
+	{ &vop_readlink_desc, apfs_vop_readlink },
+	{ &vop_abortop_desc, genfs_abortop },
 	{ &vop_inactive_desc, apfs_vop_inactive },
 	{ &vop_reclaim_desc, apfs_vop_reclaim },
 	{ &vop_lock_desc, genfs_lock },
 	{ &vop_unlock_desc, genfs_unlock },
+	{ &vop_bmap_desc, apfs_vop_bmap },
+	{ &vop_strategy_desc, apfs_vop_strategy },
+	{ &vop_print_desc, apfs_vop_print },
 	{ &vop_islocked_desc, genfs_islocked },
 	{ &vop_pathconf_desc, genfs_pathconf },
-	{ &vop_strategy_desc, apfs_vop_strategy },
-	{ &vop_bmap_desc, apfs_vop_bmap },
-	{ &vop_rename_desc, apfs_vop_rename },
-	{ &vop_symlink_desc, apfs_vop_symlink },
-	{ &vop_readlink_desc, apfs_vop_readlink },
+	{ &vop_advlock_desc, genfs_nullop },
+	{ &vop_bwrite_desc, vn_bwrite },
 	{ &vop_getpages_desc, genfs_getpages },
 	{ &vop_putpages_desc, genfs_putpages },
 	{ NULL, NULL }
@@ -51,10 +71,79 @@ const struct vnodeopv_entry_desc apfs_vnodeop_entries[] = {
 const struct vnodeopv_desc apfs_vnodeop_opv_desc =
 	{ &apfs_vnodeop_p, apfs_vnodeop_entries };
 
+/* Special device vnode ops */
+int (**apfs_specop_p)(void *);
+const struct vnodeopv_entry_desc apfs_specop_entries[] = {
+	{ &vop_default_desc, vn_default_error },
+	GENFS_SPECOP_ENTRIES,
+	{ &vop_close_desc, spec_close },
+	{ &vop_access_desc, apfs_vop_access },
+	{ &vop_accessx_desc, genfs_accessx },
+	{ &vop_getattr_desc, apfs_vop_getattr },
+	{ &vop_setattr_desc, apfs_vop_setattr },
+	{ &vop_read_desc, spec_read },
+	{ &vop_write_desc, spec_write },
+	{ &vop_fcntl_desc, genfs_fcntl },
+	{ &vop_fsync_desc, spec_fsync },
+	{ &vop_inactive_desc, apfs_vop_inactive },
+	{ &vop_reclaim_desc, apfs_vop_reclaim },
+	{ &vop_lock_desc, genfs_lock },
+	{ &vop_unlock_desc, genfs_unlock },
+	{ &vop_print_desc, apfs_vop_print },
+	{ &vop_islocked_desc, genfs_islocked },
+	{ &vop_bwrite_desc, vn_bwrite },
+	{ NULL, NULL }
+};
+const struct vnodeopv_desc apfs_specop_opv_desc =
+	{ &apfs_specop_p, apfs_specop_entries };
+
+/* FIFO vnode ops */
+int (**apfs_fifoop_p)(void *);
+const struct vnodeopv_entry_desc apfs_fifoop_entries[] = {
+	{ &vop_default_desc, vn_default_error },
+	GENFS_FIFOOP_ENTRIES,
+	{ &vop_close_desc, vn_fifo_bypass },
+	{ &vop_access_desc, apfs_vop_access },
+	{ &vop_accessx_desc, genfs_accessx },
+	{ &vop_getattr_desc, apfs_vop_getattr },
+	{ &vop_setattr_desc, apfs_vop_setattr },
+	{ &vop_read_desc, vn_fifo_bypass },
+	{ &vop_write_desc, vn_fifo_bypass },
+	{ &vop_fcntl_desc, genfs_fcntl },
+	{ &vop_fsync_desc, vn_fifo_bypass },
+	{ &vop_inactive_desc, apfs_vop_inactive },
+	{ &vop_reclaim_desc, apfs_vop_reclaim },
+	{ &vop_lock_desc, genfs_lock },
+	{ &vop_unlock_desc, genfs_unlock },
+	{ &vop_strategy_desc, vn_fifo_bypass },
+	{ &vop_print_desc, apfs_vop_print },
+	{ &vop_islocked_desc, genfs_islocked },
+	{ &vop_bwrite_desc, vn_bwrite },
+	{ NULL, NULL }
+};
+const struct vnodeopv_desc apfs_fifoop_opv_desc =
+	{ &apfs_fifoop_p, apfs_fifoop_entries };
+
 const struct vnodeopv_desc * const apfs_vnodeopv_descs[] = {
 	&apfs_vnodeop_opv_desc,
+	&apfs_specop_opv_desc,
+	&apfs_fifoop_opv_desc,
 	NULL,
 };
+
+int
+apfs_vop_print(void *v)
+{
+	struct vop_print_args *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct apfsnode *apnode = VTOA(vp);
+
+	printf("tag VT_NON, apfsnode %p, ino 0x%llx, mode 0%o, size %llu\n",
+	    apnode, (unsigned long long)apnode->a_oid,
+	    apnode->a_ino.mode,
+	    (unsigned long long)apnode->a_ino.uncompressed_size);
+	return 0;
+}
 
 int
 apfs_name_hash(const char *name, size_t len, bool case_insensitive,

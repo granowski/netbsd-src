@@ -792,18 +792,41 @@ apfs_loadvnode(struct mount *mp, struct vnode *vp, const void *key_data,
 		apnode->a_ino.uncompressed_size = dstream_size;
 
 	vp->v_tag = VT_NON; /* TODO: Add VT_APFS to NetBSD */
-	vp->v_op = apfs_vnodeop_p;
 	vp->v_data = apnode;
 
 	switch (apnode->a_ino.mode & S_IFMT) {
-	case S_IFDIR: vp->v_type = VDIR; break;
-	case S_IFREG: vp->v_type = VREG; break;
-	case S_IFLNK: vp->v_type = VLNK; break;
-	case S_IFBLK: vp->v_type = VBLK; break;
-	case S_IFCHR: vp->v_type = VCHR; break;
-	case S_IFIFO: vp->v_type = VFIFO; break;
-	case S_IFSOCK: vp->v_type = VSOCK; break;
-	default: vp->v_type = VNON; break;
+	case S_IFDIR:
+		vp->v_type = VDIR;
+		vp->v_op = apfs_vnodeop_p;
+		break;
+	case S_IFREG:
+		vp->v_type = VREG;
+		vp->v_op = apfs_vnodeop_p;
+		break;
+	case S_IFLNK:
+		vp->v_type = VLNK;
+		vp->v_op = apfs_vnodeop_p;
+		break;
+	case S_IFBLK:
+		vp->v_type = VBLK;
+		vp->v_op = apfs_specop_p;
+		break;
+	case S_IFCHR:
+		vp->v_type = VCHR;
+		vp->v_op = apfs_specop_p;
+		break;
+	case S_IFIFO:
+		vp->v_type = VFIFO;
+		vp->v_op = apfs_fifoop_p;
+		break;
+	case S_IFSOCK:
+		vp->v_type = VSOCK;
+		vp->v_op = apfs_vnodeop_p;
+		break;
+	default:
+		vp->v_type = VNON;
+		vp->v_op = apfs_vnodeop_p;
+		break;
 	}
 	if (ino == APFS_ROOT_INO)
 		vp->v_vflag |= VV_ROOT;
