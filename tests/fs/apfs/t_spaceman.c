@@ -777,6 +777,22 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp,
                 brelse(bp, 0);
                 return false;
             }
+
+            /* Verify that mapped ephemeral object is present and valid */
+            struct buf *mbp;
+            int merror = apfs_bread(amp, (apfs_paddr_t)mapping_paddr, &mbp);
+            if (merror != 0) {
+                brelse(bp, 0);
+                return false;
+            }
+            const obj_phys_t *obj = (const obj_phys_t *)mbp->b_data;
+            if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) != xid ||
+                !apfs_checksum_valid(amp, obj)) {
+                brelse(mbp, 0);
+                brelse(bp, 0);
+                return false;
+            }
+            brelse(mbp, 0);
         }
         found_map = true;
         found_last |= (flags & CHECKPOINT_MAP_LAST) != 0;

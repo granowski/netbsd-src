@@ -332,6 +332,34 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 				brelse(bp, 0);
 				return false;
 			}
+
+			/* Verify that mapped ephemeral object is present and valid */
+			struct buf *mbp;
+			int merror = apfs_bread(amp, (apfs_paddr_t)mapping_paddr, &mbp);
+			if (merror != 0) {
+				printf("apfs_checkpoint: XID 0x%llx cannot read "
+				    "ephemeral block %llu: error %d\n",
+				    (unsigned long long)xid,
+				    (unsigned long long)mapping_paddr, merror);
+				brelse(bp, 0);
+				return false;
+			}
+			const obj_phys_t *obj = (const obj_phys_t *)mbp->b_data;
+			if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) != xid ||
+			    !apfs_checksum_valid(amp, obj)) {
+				printf("apfs_checkpoint: XID 0x%llx ephemeral block %llu "
+				    "invalid (oid 0x%llx xid 0x%llx type 0x%x, expected oid 0x%llx xid 0x%llx)\n",
+				    (unsigned long long)xid,
+				    (unsigned long long)mapping_paddr,
+				    (unsigned long long)le64toh(obj->o_oid),
+				    (unsigned long long)le64toh(obj->o_xid),
+				    le32toh(obj->o_type),
+				    (unsigned long long)oid, (unsigned long long)xid);
+				brelse(mbp, 0);
+				brelse(bp, 0);
+				return false;
+			}
+			brelse(mbp, 0);
 		}
 		found_map = true;
 		found_last |= (flags & CHECKPOINT_MAP_LAST) != 0;
