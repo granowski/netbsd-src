@@ -1,4 +1,4 @@
-/*	$NetBSD: ucom.c,v 1.152 2025/12/02 01:16:41 manu Exp $	*/
+/*	$NetBSD: ucom.c,v 1.155 2026/11/10 03:43:27 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1998, 2000 The NetBSD Foundation, Inc.
@@ -34,10 +34,9 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ucom.c,v 1.152 2025/12/02 01:16:41 manu Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ucom.c,v 1.155 2026/11/10 03:43:27 thorpej Exp $");
 
 #ifdef _KERNEL_OPT
-#include "opt_ddb.h"
 #include "opt_ntp.h"
 #include "opt_usb.h"
 #endif
@@ -61,6 +60,8 @@ __KERNEL_RCSID(0, "$NetBSD: ucom.c,v 1.152 2025/12/02 01:16:41 manu Exp $");
 #include <sys/tty.h>
 #include <sys/vnode.h>
 
+#include <ddb/db_active.h>
+
 #include <dev/cons.h>
 
 #include <dev/usb/usb.h>
@@ -69,8 +70,6 @@ __KERNEL_RCSID(0, "$NetBSD: ucom.c,v 1.152 2025/12/02 01:16:41 manu Exp $");
 #include <dev/usb/usbhist.h>
 
 #include <dev/usb/ucomvar.h>
-
-#include <ddb/db_active.h>
 
 #include "ucom.h"
 #include "locators.h"
@@ -266,9 +265,7 @@ static void	ucom_cnputc(dev_t, int);
 static void	ucom_cnpollc(dev_t, int);
 static void	ucom_cnfree(struct ucom_softc *);
 static void	ucom_cnhalt(dev_t);
-#ifdef DDB
 static void	ucom_cncheckmagic(struct ucom_softc *, struct ucom_buffer *);
-#endif
 
 /*
  * Following are all routines needed for COM to act as console
@@ -591,6 +588,7 @@ ucom_cninit(struct ucom_softc *sc)
 	cn_tab = &ucom_cnops;
 	cn_init_magic(&cn->cn_magic_state);
 	cn_set_magic("\047\001"); /* default magic is BREAK */
+	cn_set_magic_action(&cn->cn_magic_state, voidop);
 
 	aprint_normal_dev(sc->sc_dev, "console\n");
 
@@ -1787,13 +1785,12 @@ ucom_softintr(void *arg)
 
 	mutex_enter(&sc->sc_lock);
 
-#ifdef DDB
 	struct ucom_cnstate *cn = sc->sc_cn;
 
 	if (cn && cn->cn_magic_req) {
 		if (!SIMPLEQ_EMPTY(&sc->sc_ibuff_empty)) {
 			cn->cn_magic_req = false;
-			cn_trap();
+			console_debugger();
 		} else {
 			/*
 			 * Very unlikely case where ucom_softintr()
@@ -1804,7 +1801,6 @@ ucom_softintr(void *arg)
 			kpreempt_enable();
 		}
 	}
-#endif
 
 	ttylock(tp);
 	if (!ISSET(tp->t_state, TS_ISOPEN)) {
@@ -2041,9 +2037,7 @@ ucomreadcb(struct usbd_xfer *xfer, void *p, usbd_status status)
 
 	rnd_add_uint32(&sc->sc_rndsource, cc);
 
-#ifdef DDB
 	ucom_cncheckmagic(sc, ub);
-#endif
 	ucom_mutex_enter(sc);
 	/*
 	 * Quickly discard input if device is not open,
@@ -2302,9 +2296,8 @@ ucom_cnhalt(dev_t dev)
 	ucom_cnfree(sc);
 }
 
-#ifdef DDB
 /*
- * This is almost cn_check_magic() but the call to cn_trap() is
+ * Wrapper around cn_check_magic(); the call to console_debugger() is
  * deferred so that it happens in ucom_softintr().
  */
 static void
@@ -2317,24 +2310,15 @@ ucom_cncheckmagic(struct ucom_softc *sc, struct ucom_buffer *ub)
 		return;
 
 	for (size_t i = ub->ub_index; i < ub->ub_len; i++) {
-		int _v = s->cnm_magic[s->cnm_state];
-		if (ub->ub_data[i] == CNS_MAGIC_VAL(_v)) {
-			s->cnm_state = CNS_MAGIC_NEXT(_v);
-			if (s->cnm_state == CNS_TERM) {
-				cn->cn_magic_req = true;
-				s->cnm_state = 0;
-
-				kpreempt_disable();
-				softint_schedule(sc->sc_si);
-				kpreempt_enable();
-				break;
-			}
-		} else {
-			s->cnm_state = 0;
+		if (cn_check_magic_impl(ub->ub_data[i], s)) {
+			cn->cn_magic_req = true;
+			kpreempt_disable();
+			softint_schedule(sc->sc_si);
+			kpreempt_enable();
+			break;
 		}
 	}
 }
-#endif /* DDB */
 
 int
 ucomprint(void *aux, const char *pnp)

@@ -1,4 +1,4 @@
-#	$NetBSD: 3RDPARTY,v 1.2267 2026/10/20 17:39:19 riastradh Exp $
+#	$NetBSD: 3RDPARTY,v 1.2278 2026/11/13 16:43:33 christos Exp $
 #
 # This file contains a list of the software that has been integrated into
 # NetBSD where we are not the primary maintainer.
@@ -173,19 +173,19 @@ Location:	external/mit/libuv/dist
 Notes:
 
 Package:	unbound
-Version:	1.26.1
-Current Vers:	1.26.1
+Version:	1.26.2
+Current Vers:	1.26.2
 Maintainer:	Nlnetlabs
 Archive Site:	https://www.unbound.net/downloads/unbound-latest.tar.gz
 Home Page:	https://www.unbound.net/
-Date:		2026-09-17
+Date:		2026-10-22
 Mailing List:	https://unbound.nlnetlabs.nl/mailman/listinfo/unbound-users
 Responsible:	christos
 License:	BSD-like
 Location:	external/bsd/unbound/dist
 Vendor tag:	NLNETLABS
 Release tag:	unbound-M-m-t
-Current tag:	unbound-1-26-1
+Current tag:	unbound-1-26-2
 Notes:
 Use cleantags to import
 run configure --with-libevent and update config files in include
@@ -436,11 +436,11 @@ Notes:
 
 Package:	expat
 Version:	2.8.5
-Current Vers:	2.9.0
+Current Vers:	2.10.0
 Maintainer:	Expat Project
 Archive Site:	https://github.com/libexpat/libexpat/releases
 Home Page:	http://www.libexpat.org/
-Date:		2026-10-05
+Date:		2026-11-02
 Mailing List:	expat-discuss@libexpat.org
 Responsible:	mrg
 License:	MIT
@@ -465,11 +465,11 @@ use file2netbsd
 
 Package:	flex
 Version:	2.6.4
-Current Vers:	2.6.4
+Current Vers:	2.6.9
 Maintainer:	Will Estes <wlestes@users.sourceforge.net>
 Archive Site:	https://github.com/westes/flex/releases
 Home Page:	https://github.com/westes/flex
-Date:		2026-01-30
+Date:		2026-11-12
 Mailing List:	http://lists.sourceforge.net/mailman/listinfo/flex-announce
 Responsible:
 License:	BSD-like
@@ -1119,11 +1119,11 @@ Patch applied after OpenSSH import.
 
 Package:	OpenSSH
 Version:	10.6
-Current Vers:	10.6 / portable 10.6p1
+Current Vers:	10.6 / portable 10.6p2
 Maintainer:	OpenSSH
 Archive Site:	http://www.openssh.com/ftp.html
 Home Page:	http://www.openssh.com/portable.html
-Date:		2026-10-07
+Date:		2026-11-05
 Mailing List:	openssh-unix-announce@mindrot.org
 Responsible:	thorpej, christos, elric
 License:	BSD. See src/crypto/external/bsd/openssh/dist/LICENSE
@@ -1306,12 +1306,12 @@ Location:	external/ibm-public/postfix/dist
 Notes:
 
 Package:	ppp
-Version:	2.5.2
-Current Vers:	2.5.4
+Version:	2.5.5
+Current Vers:	2.5.5
 Maintainer:	Paul Mackerras <paulus@samba.org>
 Archive Site:
 Home Page:
-Date: 		2026-09-27
+Date: 		2026-11-13
 GIT root:	https://github.com/ppp-project/ppp
 Mailing List:
 Responsible:	christos, cube
@@ -1497,14 +1497,14 @@ Location:	external/bsd/tradcpp
 Notes:
 
 Package:	tz
-Version:	tzcode2026e / tzdata2026egtz
-Current Vers:	tzcode2026e / tzdata2026e
+Version:	tzcode2026e / tzdata2026fgtz
+Current Vers:	tzcode2026f / tzdata2026f
 Maintainer:	Paul Eggert <eggert@cs.ucla.edu>
 Archive Site:	ftp://ftp.iana.org/tz/releases/
 Archive Site:	ftp://munnari.oz.au/pub/oldtz/
 Old Archive Site:	ftp://elsie.nci.nih.gov/pub/
 Home Page:	http://www.iana.org/time-zones
-Date:		2026-10-01
+Date:		2026-10-29
 Mailing List:	tz@iana.org
 Responsible:	kleink, christos, kre
 License:	Public domain
@@ -1534,19 +1534,19 @@ Notes:
 See src/external/bsd/wpa/NetBSD-upgrade for update instructions.
 
 Package:	zlib
-Version:	1.3.2
-Current Vers:	1.3.2
+Version:	1.4.0
+Current Vers:	1.4.0
 Maintainer:	Jean-loup Gailly and Mark Adler <zlib@gzip.org>
 Archive Site:	http://www.zlib.net/
 Home Page:	http://www.zlib.net/
-Date: 		2026-09-27
+Date: 		2026-11-11
 Mailing List:
 Responsible:	gwr, christos
 License:	BSD (3-clause)
 Location:	common/dist/zlib
 Notes:
 Imported to src/common/dist/zlib and shared by the kernel and userland.
-Remember to run cleantags
+Remember to run cleantags, and update /usr/src/lib/libz/zlib.pc
 
 Package:	zstd
 Version:	1.5.7
@@ -2491,3 +2491,23 @@ Vendor tag:	FreeBSD
 Release tag:	CDDL-FreeBSD-rNNNN
 Notes:
 Our upstream is currently FreeBSD, part of dtrace/zfs...
+
+Package:	brotli
+Version:	1.2.1
+Current Vers:	1.2.1
+Maintainer:	Google, Inc.
+Archive Site:	https://github.com/google/brotli
+Home Page:	https://github.com/google/brotli
+Date:		2026-10-28
+Mailing List:
+License:	MIT-like
+Responsible:	mrg
+Location:	xsrc/external/mit/brotli
+Vendor tag:	GOOGLE
+Release tag:	brotli-
+Notes:
+Generic-purpose lossless compression algorithm, used by freetype.
+This is embedded directly into freetype, using identifier renames
+to make sure it can't conflict with other installations.
+When importing, delete the c/enc/, go/, and python/ subdirectories,
+they are not used.

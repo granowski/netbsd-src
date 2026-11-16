@@ -1,4 +1,4 @@
-/*	$NetBSD: kgdb.h,v 1.4 2022/10/26 23:38:09 riastradh Exp $	*/
+/*	$NetBSD: kgdb.h,v 1.6 2026/11/10 03:43:27 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2013 The NetBSD Foundation, Inc.

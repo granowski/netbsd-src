@@ -1,10 +1,11 @@
-# $NetBSD: mi,v 1.7 2026/08/01 20:48:02 thorpej Exp $
+# $NetBSD: mi,v 1.9 2026/10/30 22:32:03 nia Exp $
 #
 # Note: don't delete entries from here - mark them as "obsolete" instead.
 #
 ./etc/mtree/set.rescue				base-rescue-root
 ./rescue/[					base-rescue-root
 ./rescue/atactl					base-rescue-root
+./rescue/atto					base-rescue-root
 ./rescue/badsect				base-rescue-root
 ./rescue/brconfig				base-rescue-root
 ./rescue/bunzip2				base-rescue-root
@@ -106,6 +107,7 @@
 ./rescue/mount_union				base-rescue-root	unionfs
 ./rescue/mt					base-rescue-root
 ./rescue/mv					base-rescue-root
+./rescue/natto					base-rescue-root
 ./rescue/newfs					base-rescue-root
 ./rescue/newfs_lfs				base-rescue-root	lfs
 ./rescue/newfs_msdos				base-rescue-root	msdosfs

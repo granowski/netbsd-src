@@ -34,6 +34,8 @@
 #define	LOCAL_IP1	"10.1.1.1"
 #define	LOCAL_IP2	"10.1.1.2"
 #define	LOCAL_IP3	"10.1.1.3"
+#define LOCAL_IP60	"192.168.64.60"
+#define LOCAL_IP70	"192.168.64.70"
 
 /* Note: RFC 5737 compliant addresses. */
 #define	PUB_IP1		"192.0.2.1"
@@ -94,7 +96,7 @@ void		npfkern_m_freem(struct mbuf *);
 void		npf_test_init(int (*)(int, const char *, void *),
 		    const char *(*)(int, const void *, char *, socklen_t),
 		    long (*)(void));
-void		npf_test_fini(void);
+void		npf_test_fini(const char *);
 int		npf_test_load(const void *, size_t, bool);
 ifnet_t *	npf_test_addif(const char *, bool, bool);
 ifnet_t *	npf_test_getif(const char *);
@@ -127,6 +129,7 @@ bool		npf_nat_test(bool);
 bool 		npf_guid_test(bool);
 bool		npf_gc_test(bool);
 bool		npf_layer2only_test(bool);
+bool		npf_procedure_test(bool);
 
 int		npf_inet_pton(int, const char *, void *);
 const char *	npf_inet_ntop(int, const void *, char *, socklen_t);

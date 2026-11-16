@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap_motorola.c,v 1.111 2026/08/23 22:08:40 riastradh Exp $        */
+/*	$NetBSD: pmap_motorola.c,v 1.114 2026/11/14 02:43:48 thorpej Exp $        */
 
 /*-
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
@@ -122,7 +122,7 @@
 #include "opt_m68k_arch.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: pmap_motorola.c,v 1.111 2026/08/23 22:08:40 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: pmap_motorola.c,v 1.114 2026/11/14 02:43:48 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -386,8 +386,8 @@ __CTASSERT(PAGE_SIZE != 0);
  *
  *	Phase 2 of pmap bootstrap.  (Phase 1 is system-specific.)
  *
- *	Initialize lwp0 uarea, curlwp, and curpcb after MMU is turned on,
- *	using lwp0uarea variable saved during pmap_bootstrap().
+ *	Initialize lwp0 uarea after MMU is turned on, using lwp0uarea
+ *	variable saved during pmap_bootstrap().
  *
  *	Returns the new kernel %sp value for lwp0.
  */
@@ -424,12 +424,10 @@ pmap_bootstrap2(void)
 	pmap_kernel()->pm_count = 1;
 
 	/*
-	 * Initialize lwp0 uarea, curlwp, and curpcb.
+	 * Initialize lwp0 uarea, and curlwp.
 	 */
 	memset((void *)lwp0uarea, 0, USPACE);
 	uvm_lwp_setuarea(&lwp0, lwp0uarea);
-	curlwp = &lwp0;
-	curpcb = lwp_getpcb(&lwp0);
 
 	/* Create a fake exception frame so that cpu_lwp_fork() can copy it. */
 	struct trapframe *tf = (struct trapframe *)(lwp0uarea + USPACE) - 1;
@@ -2864,16 +2862,15 @@ pmap_procwr(struct proc	*p, vaddr_t va, size_t len)
 	(void)cachectl1(0x80000004, va, len, p);
 }
 
-#if defined(DDB) || defined(KGDB)
 /*
- *	Routine:	pmap_db_write_text_enter
+ *	Routine:	pmap_write_text_enter
  *
  *	Function:
  *		Temporarily map a page of kernel text read-write for the
  *		kernel debugger.
  */
 bool
-pmap_db_write_text_enter(vaddr_t pgva, struct pmap_db_write_text_context *ctx)
+pmap_write_text_enter(vaddr_t pgva, struct pmap_write_text_context *ctx)
 {
 	volatile pt_entry_t *pte;
 	pt_entry_t oldpte, tmppte;
@@ -2912,18 +2909,17 @@ pmap_db_write_text_enter(vaddr_t pgva, struct pmap_db_write_text_context *ctx)
 }
 
 /*
- *	Routine:	pmap_db_write_text_exit
+ *	Routine:	pmap_write_text_exit
  *
  *	Function:
- *		Undo the effects of pmap_db_write_text_enter().
+ *		Undo the effects of pmap_write_text_enter().
  */
 void
-pmap_db_write_text_exit(struct pmap_db_write_text_context *ctx)
+pmap_write_text_exit(struct pmap_write_text_context *ctx)
 {
 	*ctx->ptep = ctx->opte;
 	TBIS(ctx->pgva);
 }
-#endif /* DDB || KGDB */
 
 void
 _pmap_set_page_cacheable(pmap_t pmap, vaddr_t va)

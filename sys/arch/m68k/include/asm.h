@@ -1,4 +1,4 @@
-/*	$NetBSD: asm.h,v 1.38 2026/03/15 17:10:34 christos Exp $	*/
+/*	$NetBSD: asm.h,v 1.43 2026/11/14 02:01:53 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 1997 The NetBSD Foundation, Inc.
@@ -190,6 +190,14 @@
 #endif
 
 #ifdef _KERNEL
+
+/*
+ * Macro for setting the initial kernel stack pointer.  Ensures tht
+ * the stack frame chain is terminated by also initializing the
+ * frame pointer to 0.
+ */
+#define	INIT_KSP(reg)		movl reg,%sp ; movl __IMMEDIATE 0,%a6
+
 /*
  * Shorthand for calling panic().
  * Note the side-effect: it uses up the 9: label, so be careful!
@@ -217,6 +225,22 @@
 	move.l	-(%a1),%d1;	/* doesn't change CCR[X] */	\
 	addx.l	%d0,%d1;					\
 	move.l	%d1,(%a1)
+
+/* Get current process / current pcb */
+#define	GET_CURLWP(ar)						\
+	movl	_C_LABEL(curlwp),ar
+
+#define	SET_CURLWP(ar, sr)					\
+	movl	ar,_C_LABEL(curlwp)
+
+#define	GET_CURPCB(ar)						\
+	GET_CURLWP(ar); movl L_PCB(ar),ar
+
+/* Increment/decrement the interrupt depth. */
+#define	INTR_DEPTH_INCR						\
+	addql	__IMMEDIATE 1,_C_LABEL(cpu_info_store)+CI_IDEPTH
+#define	INTR_DEPTH_DECR						\
+	subql	__IMMEDIATE 1,_C_LABEL(cpu_info_store)+CI_IDEPTH
 
 #endif /* _KERNEL */
 

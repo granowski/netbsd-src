@@ -1,4 +1,4 @@
-/*	$NetBSD: gftty.c,v 1.6 2026/08/07 23:48:20 tls Exp $	*/
+/*	$NetBSD: gftty.c,v 1.9 2026/11/10 03:05:01 thorpej Exp $	*/
 
 /*-     
  * Copyright (c) 2023, 2024 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: gftty.c,v 1.6 2026/08/07 23:48:20 tls Exp $");
+__KERNEL_RCSID(0, "$NetBSD: gftty.c,v 1.9 2026/11/10 03:05:01 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/conf.h>
@@ -377,7 +377,7 @@ gftty_softrx(void *v)
 	struct gftty_softc *sc = v;
 	struct tty *tp = sc->sc_tty;
 	int i, len;
-	unsigned char *cp;
+	unsigned char *cp, ch;
 
 	ttylock(tp);
 	cp = sc->sc_rxbuf;
@@ -392,7 +392,11 @@ gftty_softrx(void *v)
 	ttyunlock(tp);
 
 	for (i = 0; i < len; i++) {
-		(*tp->t_linesw->l_rint)(*cp++, tp);
+		ch = *cp++;
+		if (cn_check_magic(tp->t_dev, ch, &gftty_cnmagic_state)) {
+			continue;
+		}
+		(*tp->t_linesw->l_rint)(ch, tp);
 	}
 }
 
@@ -780,6 +784,8 @@ gftty_cngetc(dev_t dev)
 
 	gftty_set_buffer(c, addr, sizeof(buf));
 	REG_WRITE0(c, GFTTY_CMD, CMD_READ_BUFFER);
+
+	cn_check_magic(dev, buf[0], &gftty_cnmagic_state);
 
 	return buf[0];
 }

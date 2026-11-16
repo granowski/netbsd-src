@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap_68k.h,v 1.22 2026/07/16 14:15:15 thorpej Exp $	*/
+/*	$NetBSD: pmap_68k.h,v 1.26 2026/11/13 01:07:14 thorpej Exp $	*/
 
 /*-     
  * Copyright (c) 2025 The NetBSD Foundation, Inc.
@@ -216,12 +216,17 @@ struct pmap_bootmap {
 	int			pmbm_flags;
 };
 
-#define	PMBM_F_VAONLY	__BIT(0)
-#define	PMBM_F_FIXEDVA	__BIT(1)
-#define	PMBM_F_KEEPOUT	__BIT(2)
-#define	PMBM_F_CI	__BIT(3)	/* cache-inhibited mapping */
-#define	PMBM_F_CWT	__BIT(4)	/* write-through cacheable mapping */
-#define	PMBM_F_RO	__BIT(5)	/* read-only mapping */
+#define	PMBM_F_RO	__BIT(2)	/* same as PTE40 W bit */
+#define	PMBM_F_U0	__BIT(8)	/* same as PTE40 U0 bit */
+#define	PMBM_F_U1	__BIT(9)	/* same as PTE40 U1 bit */
+
+#define	PMBM_F_VAONLY	__BIT(16)
+#define	PMBM_F_FIXEDVA	__BIT(17)
+#define	PMBM_F_KEEPOUT	__BIT(18)
+#define	PMBM_F_CI	__BIT(19)	/* cache-inhibited mapping */
+#define	PMBM_F_CWT	__BIT(20)	/* write-through cacheable mapping */
+
+#define	PMBM_F_PTEBITS	(PMBM_F_U0 | PMBM_F_U1)
 
 /*
  * Abstract definitions for PTE bits / fields.  C code will compile-time-
@@ -443,14 +448,14 @@ bool	pmap_pa_has_static_mapping(paddr_t, size_t, vm_prot_t,
 	    vaddr_t *, int *);
 bool	pmap_va_is_static_mapping(vaddr_t, size_t);
 
-/* Kernel debugger support functions. */
-struct pmap_db_write_text_context {
+/* Support for patching kernel text. */
+struct pmap_write_text_context {
 	vaddr_t		pgva;
 	pt_entry_t *	ptep;
 	pt_entry_t	opte;
 };
-bool	pmap_db_write_text_enter(vaddr_t, struct pmap_db_write_text_context *);
-void	pmap_db_write_text_exit(struct pmap_db_write_text_context *);
+bool	pmap_write_text_enter(vaddr_t, struct pmap_write_text_context *);
+void	pmap_write_text_exit(struct pmap_write_text_context *);
 
 /*
  * Functions exported for compatibility with the Hibler pmap, where
@@ -460,6 +465,7 @@ void	pmap_db_write_text_exit(struct pmap_db_write_text_context *);
  */
 paddr_t		vtophys(vaddr_t);
 
+extern paddr_t	lwp0upa;
 extern char *	vmmap;
 extern void *	msgbufaddr;
 

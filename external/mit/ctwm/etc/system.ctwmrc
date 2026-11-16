@@ -1,5 +1,5 @@
 #
-# $NetBSD: system.ctwmrc,v 1.20 2024/04/24 10:35:13 nia Exp $
+# $NetBSD: system.ctwmrc,v 1.22 2026/11/08 02:19:53 nia Exp $
 #
 # ctwmrc by nia
 #
@@ -298,6 +298,7 @@ menu "termutils"
     "Terminal utilities"	f.title
     ""				f.separator
     " VIsual Editor"		!"xterm -class UXTerm -e vi &"
+    " Atto Emacs"		!"xterm -class UXTerm -e atto &"
     " Tetris"			!"xterm -class UXTerm -e tetris &"
     ""				f.separator
     " Audio mixer"		!"xterm -class UXTerm -e aiomixer &"
@@ -329,9 +330,6 @@ menu "titleops"
     " Iconify"     f.iconify
     " Resize"      f.resize
     " Move"        f.move
-    ""             f.separator
-    " Occupy ..."  f.occupy
-    " Occupy All"  f.occupyall
     ""             f.separator
     " Raise"       f.raise
     " Lower"       f.lower

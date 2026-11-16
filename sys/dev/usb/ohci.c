@@ -1,4 +1,4 @@
-/*	$NetBSD: ohci.c,v 1.330 2025/03/31 14:46:42 riastradh Exp $	*/
+/*	$NetBSD: ohci.c,v 1.333 2026/10/23 05:07:17 mrg Exp $	*/
 
 /*
  * Copyright (c) 1998, 2004, 2005, 2012, 2016, 2020 The NetBSD Foundation, Inc.
@@ -42,7 +42,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ohci.c,v 1.330 2025/03/31 14:46:42 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ohci.c,v 1.333 2026/10/23 05:07:17 mrg Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -2344,7 +2344,7 @@ ohci_abortx(struct usbd_xfer *xfer)
 	 *    abort.  So as we're scanning the TDs of this xfer we check if
 	 *    the hardware points to any  of them.
 	 *
-	 * 2) the hardware may have only partially excuted the transfer
+	 * 2) the hardware may have only partially executed the transfer
 	 *    which means some TDs will appear on the done list.  Wait for
 	 *    WDH so we can remove them safely.
 	 */

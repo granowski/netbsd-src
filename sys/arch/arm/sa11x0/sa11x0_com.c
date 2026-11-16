@@ -1,4 +1,4 @@
-/*      $NetBSD: sa11x0_com.c,v 1.59 2022/10/26 23:38:07 riastradh Exp $        */
+/*      $NetBSD: sa11x0_com.c,v 1.61 2026/11/10 03:43:25 thorpej Exp $        */
 
 /*-
  * Copyright (c) 1998, 1999, 2001 The NetBSD Foundation, Inc.
@@ -64,7 +64,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sa11x0_com.c,v 1.59 2022/10/26 23:38:07 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sa11x0_com.c,v 1.61 2026/11/10 03:43:25 thorpej Exp $");
 
 #include "opt_com.h"
 #include "opt_console.h"

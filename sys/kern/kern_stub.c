@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_stub.c,v 1.55 2026/07/17 02:19:29 thorpej Exp $	*/
+/*	$NetBSD: kern_stub.c,v 1.58 2026/11/10 03:43:27 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2007, 2008 The NetBSD Foundation, Inc.
@@ -62,9 +62,10 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_stub.c,v 1.55 2026/07/17 02:19:29 thorpej Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_stub.c,v 1.58 2026/11/10 03:43:27 thorpej Exp $");
 
 #ifdef _KERNEL_OPT
+#include "opt_ddb.h"
 #include "opt_ktrace.h"
 #include "opt_sysv.h"
 #include "opt_modular.h"
@@ -84,6 +85,11 @@ __KERNEL_RCSID(0, "$NetBSD: kern_stub.c,v 1.55 2026/07/17 02:19:29 thorpej Exp $
 #include <sys/signalvar.h>
 #include <sys/syscall.h>
 #include <sys/userconf.h>
+
+#include <ddb/db_active.h>
+#ifdef DDB
+#include <ddb/ddbvar.h>
+#endif
 
 bool default_bus_space_is_equal(bus_space_tag_t, bus_space_tag_t);
 bool default_bus_space_handle_is_equal(bus_space_tag_t, bus_space_handle_t,
@@ -359,3 +365,23 @@ default_bus_space_is_equal(bus_space_tag_t t1, bus_space_tag_t t2)
 /* Stubs for architectures with no kernel FPU access.  */
 __weak_alias(kthread_fpu_enter_md, voidop);
 __weak_alias(kthread_fpu_exit_md, voidop);
+
+/*
+ * Kernel debugger-related stubs.
+ *
+ * N.B. Always declare db_active; it's referenced by drivers for certain
+ * kinds of console-related logic.
+ */
+int	db_active;
+
+__weak_alias(cpu_Debugger, voidop);
+
+void
+console_debugger(void)
+{
+#ifdef DDB
+	if (db_fromconsole) {
+		cpu_Debugger();
+	}
+#endif
+}

@@ -1,4 +1,4 @@
-/*	$NetBSD: zs.c,v 1.124 2021/09/11 20:28:05 andvar Exp $	*/
+/*	$NetBSD: zs.c,v 1.126 2026/11/08 19:51:13 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 1996 The NetBSD Foundation, Inc.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: zs.c,v 1.124 2021/09/11 20:28:05 andvar Exp $");
+__KERNEL_RCSID(0, "$NetBSD: zs.c,v 1.126 2026/11/08 19:51:13 thorpej Exp $");
 
 #include "opt_ddb.h"
 #include "opt_kgdb.h"
@@ -796,7 +796,7 @@ zs_write_data(struct zs_chanstate *cs, uint8_t val)
  * Handle user request to enter kernel debugger.
  */
 void
-zs_abort(struct zs_chanstate *cs)
+zs_abort(void)
 {
 	struct zschan *zc = zs_conschan_get;
 	int rr0;
@@ -809,7 +809,7 @@ zs_abort(struct zs_chanstate *cs)
 	} while (rr0 & ZSRR0_BREAK);
 
 #if defined(KGDB)
-	zskgdb(cs);
+	zskgdb();
 #elif defined(DDB)
 	Debugger();
 #else

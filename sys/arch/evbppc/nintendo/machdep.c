@@ -1,4 +1,4 @@
-/* $NetBSD: machdep.c,v 1.6 2026/02/24 21:41:59 jmcneill Exp $ */
+/* $NetBSD: machdep.c,v 1.8 2026/11/10 03:43:25 thorpej Exp $ */
 
 /*
  * Copyright (c) 2002, 2024 The NetBSD Foundation, Inc.
@@ -63,7 +63,7 @@
 #define _POWERPC_BUS_DMA_PRIVATE
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.6 2026/02/24 21:41:59 jmcneill Exp $");
+__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.8 2026/11/10 03:43:25 thorpej Exp $");
 
 #include "opt_compat_netbsd.h"
 #include "opt_ddb.h"
@@ -116,8 +116,8 @@ __KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.6 2026/02/24 21:41:59 jmcneill Exp $")
 #include <powerpc/oea/hid.h>
 #include <powerpc/pic/picvar.h>
 
-#include <ddb/db_extern.h>
 #include <ddb/db_active.h>
+#include <ddb/db_extern.h>
 
 #include <dev/wscons/wsconsio.h>
 #include <dev/wscons/wsdisplayvar.h>

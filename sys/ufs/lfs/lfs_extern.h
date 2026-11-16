@@ -1,4 +1,4 @@
-/*	$NetBSD: lfs_extern.h,v 1.132 2026/08/27 14:33:13 perseant Exp $	*/
+/*	$NetBSD: lfs_extern.h,v 1.134 2026/11/01 20:01:40 perseant Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001, 2002, 2003 The NetBSD Foundation, Inc.

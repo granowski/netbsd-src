@@ -301,7 +301,8 @@ void		npf_config_destroy(npf_config_t *);
 void		npf_config_load(npf_t *, npf_config_t *, npf_conndb_t *, bool);
 npf_ruleset_t *	npf_config_ruleset(npf_t *npf);
 npf_ruleset_t *	npf_config_natset(npf_t *npf);
-npf_tableset_t *npf_config_tableset(npf_t *npf);
+npf_tableset_t	*npf_config_tableset(npf_t *npf);
+npf_rprocset_t	*npf_config_procset(npf_t *npf);
 bool		npf_default_pass(npf_t *);
 bool		npf_active_p(void);
 
@@ -465,6 +466,7 @@ void		npf_rproc_release(npf_rproc_t *);
 const char *	npf_rproc_getname(const npf_rproc_t *);
 bool		npf_rproc_run(npf_cache_t *, npf_rproc_t *,
 		    const npf_match_info_t *, int *);
+void		npf_config_procs_null(npf_t *);
 
 /* State handling. */
 void		npf_state_sysinit(npf_t *);

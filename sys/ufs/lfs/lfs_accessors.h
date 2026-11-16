@@ -1,4 +1,4 @@
-/*	$NetBSD: lfs_accessors.h,v 1.60 2026/09/27 18:48:21 perseant Exp $	*/
+/*	$NetBSD: lfs_accessors.h,v 1.62 2026/11/01 20:01:40 perseant Exp $	*/
 
 /*  from NetBSD: lfs.h,v 1.165 2015/07/24 06:59:32 dholland Exp  */
 /*  from NetBSD: dinode.h,v 1.25 2016/01/22 23:06:10 dholland Exp  */

@@ -1,4 +1,4 @@
-/*	$NetBSD: lfs_vfsops.c,v 1.407 2026/09/26 04:32:00 perseant Exp $	*/
+/*	$NetBSD: lfs_vfsops.c,v 1.409 2026/11/01 20:01:40 perseant Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001, 2002, 2003, 2007, 2007
@@ -61,7 +61,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: lfs_vfsops.c,v 1.407 2026/09/26 04:32:00 perseant Exp $");
+__KERNEL_RCSID(0, "$NetBSD: lfs_vfsops.c,v 1.409 2026/11/01 20:01:40 perseant Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_lfs.h"

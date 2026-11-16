@@ -1,4 +1,4 @@
-/*	$NetBSD: locore.s,v 1.218 2026/03/29 03:24:56 thorpej Exp $	*/
+/*	$NetBSD: locore.s,v 1.220 2026/11/13 21:05:23 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1980, 1990, 1993
@@ -166,7 +166,7 @@ BSS(esym,4)
 ASENTRY_NOPROFILE(start)
 	movw	#PSL_HIGHIPL,%sr	| no interrupts
 	ASRELOC(tmpstk, %a0)
-	movl	%a0,%sp			| give ourselves a temporary stack
+	INIT_KSP(%a0)			| give ourselves a temporary stack
 	RELOC(esym, %a0)
 	movl	%a4,%a0@		| store end of symbol table
 	RELOC(lowram, %a0)
@@ -493,13 +493,13 @@ Lmmutramp_end:
  * Should be running mapped from this point on
  */
 Lmmuenabled:
-	lea	_ASM_LABEL(tmpstk),%sp	| re-load the temporary stack
+	lea	_ASM_LABEL(tmpstk),%a0	| re-load the temporary stack
+	INIT_KSP(%a0)
 	jbsr	_C_LABEL(vec_init)	| initialize the vector table
 
 	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
 	jbsr	_C_LABEL(pmap_bootstrap2)
-	movl	%a0,%sp			| now running on lwp0's stack
-	movl	#0,%a6			| terminate the stack back trace
+	INIT_KSP(%a0)			| now running on lwp0's stack
 
 	movl	%d7,%sp@-		| push nextpa saved above
 	jbsr	_C_LABEL(machine_init)	| additional pre-main initialization
@@ -529,7 +529,7 @@ Lmmuenabled:
 	movel	%d1,EVCNT_COUNTER(ipl)
 
 ENTRY_NOPROFILE(lev6intr)	/* level 6: clock */
-	addql	#1,_C_LABEL(intr_depth)	| entering interrupt
+	INTR_DEPTH_INCR
 	INTERRUPT_SAVEREG
 	CLKADDR(%a0)
 	movb	%a0@(CLKSR),%d0		| read clock status
@@ -598,7 +598,7 @@ Lrecheck:
 					    |  generated the interrupt
 #endif
 	INTERRUPT_RESTOREREG
-	subql	#1,_C_LABEL(intr_depth)	| exiting from interrupt
+	INTR_DEPTH_DECR
 	jra	_ASM_LABEL(rei)		| all done
 
 ENTRY_NOPROFILE(lev7intr)	/* level 7: parity errors, reset key */

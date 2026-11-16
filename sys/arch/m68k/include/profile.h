@@ -1,4 +1,4 @@
-/*	$NetBSD: profile.h,v 1.22 2014/03/18 18:20:41 riastradh Exp $	*/
+/*	$NetBSD: profile.h,v 1.24 2026/11/06 20:59:26 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -42,7 +42,8 @@
 #if !defined(__mc68010__) && !defined(__mcoldfire__)
 #define	MCOUNT \
 extern void mcount(void) __asm(MCOUNT_ENTRY) \
-	__attribute__((__no_instrument_function__)); \
+	__attribute__((__no_instrument_function__)) \
+	__attribute__((__optimize__("no-omit-frame-pointer"))); \
 void mcount(void) { \
 	int selfpc, frompcindex; \
 	__asm("movl %%a6@(4),%0" : "=r" (selfpc)); \
@@ -56,7 +57,10 @@ void mcount(void) { \
  * to do something different.
  */
 #define	MCOUNT \
-extern void mcount(void) __asm("mcount"); void mcount(void) { \
+extern void mcount(void) __asm(MCOUNT_ENTRY) \
+	__attribute__((__no_instrument_function__)) \
+	__attribute__((__optimize__("no-omit-frame-pointer"))); \
+void mcount(void) { \
 	int selfpc, frompcindex; \
 	__asm("movl %%a6@(4),%0" : "=r" (selfpc)); \
 	__asm("movl %%a6@(0),%%a0 ; movl %%a0@(4),%0" : "=r" (frompcindex) : /* no inputs */ : "a0"); \

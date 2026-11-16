@@ -1,4 +1,4 @@
-/*	$NetBSD: uipc_socket2.c,v 1.150 2026/10/02 01:33:44 riastradh Exp $	*/
+/*	$NetBSD: uipc_socket2.c,v 1.152 2026/11/10 03:43:28 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uipc_socket2.c,v 1.150 2026/10/02 01:33:44 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uipc_socket2.c,v 1.152 2026/11/10 03:43:28 thorpej Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_ddb.h"
@@ -86,9 +86,10 @@ __KERNEL_RCSID(0, "$NetBSD: uipc_socket2.c,v 1.150 2026/10/02 01:33:44 riastradh
 #include <sys/systm.h>
 #include <sys/uidinfo.h>
 
+#include <ddb/db_active.h>
+
 #ifdef DDB
 #include <sys/filedesc.h>
-#include <ddb/db_active.h>
 #endif
 
 /*

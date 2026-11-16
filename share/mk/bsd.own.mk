@@ -1,4 +1,4 @@
-#      $NetBSD: bsd.own.mk,v 1.1491 2026/10/19 18:33:40 riastradh Exp $
+#      $NetBSD: bsd.own.mk,v 1.1493 2026/11/02 23:47:33 thorpej Exp $
 
 # This needs to be before bsd.init.mk
 .if defined(BSD_MK_COMPAT_FILE)
@@ -544,6 +544,7 @@ TOOL_M68KELF2AOUT=	${TOOLDIR}/bin/${_TOOL_PREFIX}m68k-elf2aout
 TOOL_MACPPCFIXCOFF=	${TOOLDIR}/bin/${_TOOL_PREFIX}macppc-fixcoff
 TOOL_MACPPCINSTALLBOOT=	${TOOLDIR}/bin/${_TOOL_PREFIX}macppc_installboot
 TOOL_MACPPCMKBOOTHFS=	${TOOLDIR}/bin/${_TOOL_PREFIX}macppc_mkboothfs
+TOOL_MAKEDOC=		${TOOLDIR}/bin/${_TOOL_PREFIX}makedoc
 TOOL_MAKEFS=		${TOOLDIR}/bin/${_TOOL_PREFIX}makefs
 TOOL_MAKEINFO=		${TOOLDIR}/bin/${_TOOL_PREFIX}makeinfo
 TOOL_MAKEKEYS=		${TOOLDIR}/bin/${_TOOL_PREFIX}makekeys
@@ -664,6 +665,7 @@ TOOL_LLVM_TBLGEN=	llvm-tblgen
 TOOL_M4=		m4
 TOOL_M68KELF2AOUT=	m68k-elf2aout
 TOOL_MACPPCFIXCOFF=	macppc-fixcoff
+TOOL_MAKEDOC=		makedoc
 TOOL_MAKEFS=		makefs
 TOOL_MAKEINFO=		makeinfo
 TOOL_MAKEKEYS=		makekeys
@@ -984,11 +986,6 @@ MKPROFILE.or1k=	no
 .if ${MACHINE_ARCH} == "m68000"
 NOPIC=		# defined
 MKISCSI=	no
-# XXX GCC 4 outputs mcount() calling sequences that try to load values
-# from over 64KB away and this fails to assemble.
-.if defined(HAVE_GCC)
-NOPROFILE=	# defined
-.endif
 .endif
 
 #

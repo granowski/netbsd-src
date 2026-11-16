@@ -1,4 +1,4 @@
-/*	$NetBSD: z8530sc.h,v 1.26 2009/05/22 03:51:30 mrg Exp $	*/
+/*	$NetBSD: z8530sc.h,v 1.28 2026/11/10 03:05:01 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -196,7 +196,6 @@ struct zsc_attach_args {
 int 	zsc_intr_soft(void *);
 int 	zsc_intr_hard(void *);
 
-void	zs_abort(struct zs_chanstate *);
 void	zs_break(struct zs_chanstate *, int);
 void	zs_iflush(struct zs_chanstate *);
 void	zs_loadchannelregs(struct zs_chanstate *);

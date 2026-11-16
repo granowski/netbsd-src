@@ -1,4 +1,4 @@
-/* $NetBSD: wsdisplay.c,v 1.167 2025/09/19 05:22:20 mrg Exp $ */
+/* $NetBSD: wsdisplay.c,v 1.169 2026/11/10 03:05:01 thorpej Exp $ */
 
 /*
  * Copyright (c) 1996, 1997 Christopher G. Demetriou.  All rights reserved.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: wsdisplay.c,v 1.167 2025/09/19 05:22:20 mrg Exp $");
+__KERNEL_RCSID(0, "$NetBSD: wsdisplay.c,v 1.169 2026/11/10 03:05:01 thorpej Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_wsdisplay_compat.h"
@@ -280,14 +280,15 @@ int wsdisplay_clearonclose;
 /*
  * Replace cn_isconsole() so that we can enter DDB from old console.
  */
-bool
+static bool
 wsdisplay_cn_isconsole(dev_t dev)
 {
 
-	return (cn_tab != NULL && cn_tab->cn_dev == dev) ||
-	    (cn_tab == &wsdisplay_cons && !wsdisplay_multicons_suspended &&
-	    wsdisplay_multicons_enable && wsdisplay_ocn != NULL &&
-	    wsdisplay_ocn->cn_dev == dev);
+	return (cn_tab == &wsdisplay_cons &&
+		!wsdisplay_multicons_suspended &&
+		wsdisplay_multicons_enable &&
+		wsdisplay_ocn != NULL &&
+		wsdisplay_ocn->cn_dev == dev);
 }
 
 static void
@@ -939,8 +940,14 @@ wsdisplay_cnattach(const struct wsscreen_descr *type, void *cookie,
 								  ccol, crow,
 								  defattr);
 
-	if (cn_tab != &wsdisplay_cons)
+	if (cn_tab != &wsdisplay_cons) {
 		wsdisplay_ocn = cn_tab;
+#ifdef WSDISPLAY_MULTICONS
+		if (wsdisplay_ocn != NULL) {
+			cn_set_isconsole_func(wsdisplay_cn_isconsole);
+		}
+#endif
+	}
 
 	if (wsdisplay_ocn != NULL && wsdisplay_ocn->cn_halt != NULL)
 		wsdisplay_ocn->cn_halt(wsdisplay_ocn->cn_dev);
@@ -1108,7 +1115,7 @@ wsdisplayclose(dev_t dev, int flag, int mode, struct lwp *l)
 		(*scr->scr_syncops->destroy)(scr->scr_synccookie);
 
 	if (WSSCREEN_HAS_EMULATOR(scr)) {
-		scr->scr_flags &= ~SCR_GRAPHICS;
+		scr->scr_flags &= ~(SCR_GRAPHICS | SCR_DUMBFB);
 		(*scr->scr_dconf->wsemul->reset)(scr->scr_dconf->wsemulcookie,
 						 WSEMUL_RESET);
 		if (wsdisplay_clearonclose)
@@ -1361,7 +1368,7 @@ wsdisplay_internal_ioctl(struct wsdisplay_softc *sc, struct wsscreen *scr,
 			return EINVAL;
 
 	    if (WSSCREEN_HAS_EMULATOR(scr)) {
-		    scr->scr_flags &= ~SCR_GRAPHICS;
+		    scr->scr_flags &= ~(SCR_GRAPHICS | SCR_DUMBFB);
 		    if (d == WSDISPLAYIO_MODE_MAPPED ||
 			d == WSDISPLAYIO_MODE_DUMBFB)
 			    scr->scr_flags |= SCR_GRAPHICS |

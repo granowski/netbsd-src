@@ -1,4 +1,4 @@
-/*	$NetBSD: machdep.c,v 1.852 2026/07/10 15:11:25 riastradh Exp $	*/
+/*	$NetBSD: machdep.c,v 1.854 2026/11/10 03:43:25 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1996, 1997, 1998, 2000, 2004, 2006, 2008, 2009, 2017
@@ -67,7 +67,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.852 2026/07/10 15:11:25 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.854 2026/11/10 03:43:25 thorpej Exp $");
 
 #include "opt_beep.h"
 #include "opt_compat_freebsd.h"
@@ -155,12 +155,11 @@ __KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.852 2026/07/10 15:11:25 riastradh Exp 
 #include <machine/isa_machdep.h>
 #include <dev/ic/i8042reg.h>
 
-#include <ddb/db_active.h>
-
 #ifdef DDB
 #include <machine/db_machdep.h>
 #include <ddb/db_extern.h>
 #endif
+#include <ddb/db_active.h>
 
 #include "acpica.h"
 #include "bioscall.h"

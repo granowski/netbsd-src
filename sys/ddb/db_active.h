@@ -1,4 +1,4 @@
-/*	$NetBSD: db_active.h,v 1.2 2022/10/27 20:00:24 riastradh Exp $	*/
+/*	$NetBSD: db_active.h,v 1.4 2026/11/10 03:43:27 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2022 The NetBSD Foundation, Inc.
@@ -29,16 +29,6 @@
 #ifndef	_DDB_DB_ACTIVE_H_
 #define	_DDB_DB_ACTIVE_H_
 
-#ifdef _KERNEL_OPT
-#include "opt_ddb.h"
-#endif
-
-#include <sys/cdefs.h>
-
-#if defined DDB || defined _KMEMUSER
 extern int db_active;
-#else
-static const int db_active __unused = 0;
-#endif
 
 #endif	/* _DDB_DB_ACTIVE_H_ */

@@ -1,4 +1,4 @@
-/*	$NetBSD: npftest.h,v 1.20 2025/07/20 12:25:54 joe Exp $	*/
+/*	$NetBSD: npftest.h,v 1.22 2026/11/07 00:16:34 joe Exp $	*/
 
 /*
  * Public Domain.
@@ -30,6 +30,7 @@
 #define	rumpns_npf_test_statetrack	npf_test_statetrack
 #define	rumpns_npf_guid_test		npf_guid_test
 #define	rumpns_npf_layer2only_test	npf_layer2only_test
+#define rumpns_npf_procedure_test	npf_procedure_test
 #endif
 
 #include "npf.h"
@@ -37,7 +38,7 @@
 void		rumpns_npf_test_init(int (*)(int, const char *, void *),
 		    const char *(*)(int, const void *, char *, socklen_t),
 		    long (*)(void));
-void		rumpns_npf_test_fini(void);
+void		rumpns_npf_test_fini(const char *);
 int		rumpns_npf_test_load(const void *, size_t, bool);
 ifnet_t *	rumpns_npf_test_addif(const char *, bool, bool);
 ifnet_t *	rumpns_npf_test_getif(const char *);
@@ -57,6 +58,7 @@ bool		rumpns_npf_nat_test(bool);
 bool		rumpns_npf_guid_test(bool);
 bool		rumpns_npf_gc_test(bool);
 bool		rumpns_npf_layer2only_test(bool);
+bool		rumpns_npf_procedure_test(bool);
 
 int		process_stream(const char *, const char *, ifnet_t *);
 

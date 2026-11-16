@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap_68k.c,v 1.79 2026/08/23 22:08:40 riastradh Exp $	*/
+/*	$NetBSD: pmap_68k.c,v 1.93 2026/11/14 02:43:48 thorpej Exp $	*/
 
 /*-     
  * Copyright (c) 2025 The NetBSD Foundation, Inc.
@@ -191,19 +191,22 @@
  *
  * - Very stable multi-user running memory pressure stress tests on
  *   small-memory configs in virt68k (qemu 68040 **with fixed MMU
- *   emulation**) and mac68k (10MB 68040, 68030).
+ *   emulation**) and mac68k (10MB 68040, 68030).  Very stable on
+ *   diskless next68k (32MB 68040).
  *
- * - Ports that have been adapted: hp300, luna68k (default),
- *   mac68k (default), mvme68k (default), news68k (default),
+ * - Ports that have been adapted: cesfic (default), hp300 (default),
+ *   luna68k (default), mac68k (default), mvme68k (default), news68k (default),
  *   next68k (default), virt68k (default), x68k.
  *
  * XXX TODO XXX
  *
- * - Adapt amiga (hard), atari (hard), cesfic (easy).
- * - Test on 68020 + 68851.
- * - Test on machines above listed as "not tested".
+ * - Adapt amiga (hard), atari (hard).
+ * - Test on 68020 + 68851.  It turns out, this is a pretty rare
+ *   combination to find out in the wild.  No problems are anticipated,
+ *   however, since the 68030's MMU is essentially identical for our
+ *   purposes.
+ * - Test on real HP MMU.
  * - More rigorous testing in various emulators (Nono, UAE?).
- * - Finish HP MMU support and test on real HP MMU.
  * - Convert '851 / '030 to 3-level (maybe?).
  * - Optimize ATC / cache manipulation.
  * - Add some more instrumentation.
@@ -217,7 +220,7 @@
 #include "opt_m68k_arch.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: pmap_68k.c,v 1.79 2026/08/23 22:08:40 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: pmap_68k.c,v 1.93 2026/11/14 02:43:48 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -856,9 +859,12 @@ __CTASSERT(PTE51_WP == PTE40_W);
 __CTASSERT(PTE51_U == PTE40_U);
 __CTASSERT(PTE51_M == PTE40_M);
 __CTASSERT(PTE51_CI == PTE40_CM_NC_SER);
+__CTASSERT(PMBM_F_U0 == PTE40_U0);
+__CTASSERT(PMBM_F_U1 == PTE40_U1);
 
 static pt_entry_t	pmap_pte_proto[UVM_PROT_ALL + 1];
 static pt_entry_t	pmap_pte_proto_ci[UVM_PROT_ALL + 1];
+static pt_entry_t	pmap_pte_proto_cwt[UVM_PROT_ALL + 1];
 static pt_entry_t	pmap_pte_proto_um[UVM_PROT_ALL + 1];
 static pt_entry_t	pmap_ste_proto;
 
@@ -932,18 +938,23 @@ pte_store(volatile pt_entry_t *ptep, pt_entry_t npte)
  * AND.L and OR.L don't use the RMC signal, so they aren't subject
  * to the same constraints.
  */
-static inline bool
+static inline pt_entry_t
 pte_update(volatile pt_entry_t *ptep, pt_entry_t opte, pt_entry_t npte)
 {
 	/*
 	 * Use compare-and-swap to update the PTE.  This ensures there's
 	 * no possibility of losing any hardware-maintained bits when
 	 * updating the PTE.
-	 *
-	 * XXX Should turn this into a single instruction when possible
-	 * XXX to deduce at compile time.
 	 */
-	return atomic_cas_uint(ptep, opte, npte) == opte;
+#if !defined(__HAVE_M68K_BROKEN_RMC)
+	__asm __volatile("casl %1,%2,%0"
+		: "+m" (*ptep), "+d" (opte)
+		: "d" (npte)
+		: "cc", "memory");
+	return opte;
+#else
+	return atomic_cas_uint(ptep, opte, npte);
+#endif
 }
 
 #if MMU_CONFIG_HP_CLASS
@@ -986,15 +997,19 @@ pte_clr_ci(pt_entry_t pte)
 static void
 pmap_pte_proto_init(void)
 {
-	pt_entry_t c_bits, ro_c_bits, rw_c_bits, ci_bits, prot_bits, um_bits;
+	pt_entry_t c_bits, rw_c_bits, ci_bits, prot_bits, um_bits;
 	int prot;
 
+	/*
+	 * N.B. PTE40_CM_WT == 0, so "write-though" caching has the same
+	 * PTE bits on all variants of the MMU.
+	 */
+
 	if (MMU_IS_68040_CLASS) {
-		ro_c_bits = PTE40_CM_WT; /* this is what the Hibler pmap did */
 		rw_c_bits = PTE40_CM_CB;
 		ci_bits = PTE40_CM_NC_SER;
 	} else {
-		ro_c_bits = rw_c_bits = 0;
+		rw_c_bits = 0;
 		ci_bits = PTE51_CI;
 	}
 
@@ -1006,10 +1021,11 @@ pmap_pte_proto_init(void)
 			prot_bits = PTE_WP;
 			um_bits = PTE_U;
 		}
-		c_bits = (prot & UVM_PROT_WRITE) ? rw_c_bits : ro_c_bits;
-		pmap_pte_proto[prot]    = PTE_VALID | prot_bits | c_bits;
-		pmap_pte_proto_ci[prot] = PTE_VALID | prot_bits | ci_bits;
-		pmap_pte_proto_um[prot] = um_bits;
+		c_bits = (prot & UVM_PROT_WRITE) ? rw_c_bits : 0;
+		pmap_pte_proto[prot]     = PTE_VALID | prot_bits | c_bits;
+		pmap_pte_proto_ci[prot]  = PTE_VALID | prot_bits | ci_bits;
+		pmap_pte_proto_cwt[prot] = PTE_VALID | prot_bits;
+		pmap_pte_proto_um[prot]  = um_bits;
 	}
 
 	/*
@@ -1039,8 +1055,23 @@ pmap_pte_proto_init(void)
 static inline pt_entry_t
 pmap_make_pte(paddr_t pa, vm_prot_t prot, u_int flags)
 {
-	pt_entry_t *pte_proto = (flags & PMAP_NOCACHE) ? pmap_pte_proto_ci
-						       : pmap_pte_proto;
+	pt_entry_t *pte_proto;
+
+	switch (flags & PMAP_CACHE_MASK) {
+	case PMAP_NOCACHE:
+	case PMAP_WRITE_COMBINE:
+	case PMAP_NOCACHE_OVR:
+		pte_proto = pmap_pte_proto_ci;
+		break;
+
+	case PMAP_WRITE_THROUGH:
+		pte_proto = pmap_pte_proto_cwt;
+		break;
+
+	default:
+		pte_proto = pmap_pte_proto;
+		break;
+	}
 
 	prot &= UVM_PROT_ALL;
 	KASSERT(prot != 0);
@@ -1270,7 +1301,7 @@ pmap_table_alloc(pmap_t pmap, bool segtab, bool nowait,
 			if (newptp == NULL) {
 				/*
 				 * If we didn't wait, then no one would
-				 * have allocted one behind our back.
+				 * have allocated one behind our back.
 				 */
 				KASSERT(nowait);
 				return NULL;
@@ -1827,12 +1858,13 @@ pmap_pv_enter(pmap_t pmap, struct vm_page *pg, vaddr_t va, vm_prot_t prot,
 		 * extremely uncommon in that scenario.
 		 */
 		for (pv = newpv->pv_next; pv != NULL; pv = pv->pv_next) {
+			pt_entry_t actual;
 			pmap_evcnt(pv_enter_ci_multi);
 			ptep = pmap_pv_pte(pv);
-			for (;;) {
-				opte = pte_load(ptep);
+			for (opte = pte_load(ptep);; opte = actual) {
 				npte = pte_set_ci(opte);
-				if (pte_update(ptep, opte, npte)) {
+				actual = pte_update(ptep, opte, npte);
+				if (__predict_true(actual == opte)) {
 					if (active_pmap(pv->pv_pmap)) {
 						TBIS(PV_VA(pv));
 					}
@@ -2016,11 +2048,13 @@ pmap_pv_remove(pmap_t pmap, struct vm_page *pg, vaddr_t va,
 		KASSERT(pv == NULL);
 		VM_MDPAGE_CLR_CI(pg);
 		for (pv = VM_MDPAGE_PVS(pg); pv != NULL; pv = pv->pv_next) {
+			pt_entry_t actual;
 			ptep = pmap_pv_pte(pv);
-			for (;;) {
+			for (opte = pte_load(ptep);; opte = actual) {
 				opte = pte_load(ptep);
 				npte = pte_clr_ci(opte);
-				if (pte_update(ptep, opte, npte)) {
+				actual = pte_update(ptep, opte, npte);
+				if (__predict_true(actual == opte)) {
 					if (active_pmap(pv->pv_pmap)) {
 						TBIS(PV_VA(pv));
 					}
@@ -2261,8 +2295,8 @@ pmap_remove_mapping(pmap_t pmap, vaddr_t va, pt_entry_t *ptep,
 	if (flags & PRM_CFLUSH) {
 #if MMU_CONFIG_68040_CLASS
 		if (MMU_IS_68040_CLASS) {
-			DCFP(pa);
-			ICPP(pa);
+			DCFP(pa);	/* cpushp dc */
+			ICPP(pa);	/* cinvp ic */
 		}
 #endif
 #if MMU_CONFIG_HP_CLASS
@@ -2610,8 +2644,9 @@ pmap_protect(pmap_t pmap, vaddr_t sva, vaddr_t eva, vm_prot_t prot)
 		 * already have the correct protection.
 		 */
 		for (; sva < nextseg; ptep++, sva += PAGE_SIZE) {
- try_again:
+			pt_entry_t actual;
 			opte = pte_load(ptep);
+ try_again:
 			if (! pte_valid_p(opte)) {
 				continue;
 			}
@@ -2630,8 +2665,10 @@ pmap_protect(pmap_t pmap, vaddr_t sva, vaddr_t eva, vm_prot_t prot)
 				ICPP(pa);
 			}
 #endif
-			if (! pte_update(ptep, opte, npte)) {
+			actual = pte_update(ptep, opte, npte);
+			if (__predict_false(actual != opte)) {
 				/* Lost race updating PTE; try again. */
+				opte = actual;
 				goto try_again;
 			}
 			if (need_tflush) {
@@ -2674,9 +2711,12 @@ pmap_enter(pmap_t pmap, vaddr_t va, paddr_t pa, vm_prot_t prot, u_int flags)
 	if (__predict_false(pg == NULL)) {
 		/*
 		 * PA is not part of managed memory.  Make the mapping
-		 * cache-inhibited on the assumption that it's a device.
+		 * cache-inhibited on the assumption that it's a device
+		 * unless there cache mode has been explcitly called out.
 		 */
-		flags |= PMAP_NOCACHE;
+		if (__predict_true((flags & PMAP_CACHE_MASK) == 0)) {
+			flags |= PMAP_NOCACHE;
+		}
 	}
 
 	PMAP_CRIT_ENTER(pmap_busy(pmap));
@@ -3022,15 +3062,14 @@ void
 pmap_unwire(pmap_t pmap, vaddr_t va)
 {
 	struct pmap_table *pt;
-	pt_entry_t opte, npte, *ptep;
+	pt_entry_t actual, opte, npte, *ptep;
 
 	PMAP_CRIT_ENTER(pmap_busy(pmap));
 
 	ptep = pmap_pte_lookup(pmap, va, &pt);
 	KASSERT(ptep != NULL);
 
-	for (;;) {
-		opte = pte_load(ptep);
+	for (opte = pte_load(ptep);; opte = actual) {
 		KASSERT(pte_valid_p(opte));
 
 		/*
@@ -3043,7 +3082,8 @@ pmap_unwire(pmap_t pmap, vaddr_t va)
 			break;
 		}
 		npte = opte & ~PTE_WIRED;
-		if (pte_update(ptep, opte, npte)) {
+		actual = pte_update(ptep, opte, npte);
+		if (__predict_true(actual == opte)) {
 			pmap_stat_update(pmap, wired_count, -1);
 			break;
 		}
@@ -3370,10 +3410,10 @@ pmap_changebit(struct vm_page *pg, pt_entry_t set, pt_entry_t mask)
 	 * not clearing.
 	 */
 	for (pv = VM_MDPAGE_PVS(pg); pv != NULL; pv = pv->pv_next) {
+		pt_entry_t actual;
 		pmap_busy(pv->pv_pmap);
-		for (;;) {
-			ptep = pmap_pv_pte(pv);
-			opte = pte_load(ptep);
+		ptep = pmap_pv_pte(pv);
+		for (opte = pte_load(ptep);; opte = actual) {
 			npte = (opte | set) & mask;
 			combined_pte |= opte;
 
@@ -3382,13 +3422,22 @@ pmap_changebit(struct vm_page *pg, pt_entry_t set, pt_entry_t mask)
 			}
 #if MMU_CONFIG_68040_CLASS
 			if (__predict_false(cflush_040)) {
-				paddr_t pa = VM_PAGE_TO_PHYS(pg);
-				DCFP(pa);
-				ICPP(pa);
-				cflush_040 = false;
+				/*
+				 * Cache push is only necessary if
+				 * the critical page attribute (W, CM)
+				 * were changed.  If we're just clearing
+				 * U or M, no push is necessary.
+				 */
+				if ((opte ^ npte) & PTE_CRIT_BITS) {
+					paddr_t pa = VM_PAGE_TO_PHYS(pg);
+					DCFP(pa);	/* cpushp dc */
+					ICPP(pa);	/* cinvp ic */
+					cflush_040 = false;
+				}
 			}
 #endif
-			if (pte_update(ptep, opte, npte)) {
+			actual = pte_update(ptep, opte, npte);
+			if (__predict_true(actual == opte)) {
 				break;
 			}
 			/* Lost race, try again. */
@@ -3661,15 +3710,14 @@ pmap_procwr(struct proc *p, vaddr_t va, size_t len)
 	(void)cachectl1(0x80000004, va, len, p);
 }
 
-#if defined(DDB) || defined(KGDB)
 /*
- * pmap_db_write_text_enter:
+ * pmap_write_text_enter:
  *
  *	Temporarily map a page of kernel text read-write for the
  *	kernel debugger.
  */
 bool
-pmap_db_write_text_enter(vaddr_t pgva, struct pmap_db_write_text_context *ctx)
+pmap_write_text_enter(vaddr_t pgva, struct pmap_write_text_context *ctx)
 {
 	pt_entry_t *pte = pmap_kernel_pte(pgva);
 
@@ -3709,17 +3757,16 @@ pmap_db_write_text_enter(vaddr_t pgva, struct pmap_db_write_text_context *ctx)
 }
 
 /*
- * pmap_db_write_text_exit:
+ * pmap_write_text_exit:
  *
- *	Undo the effects of pmap_db_write_text_enter().
+ *	Undo the effects of pmap_write_text_enter().
  */
 void
-pmap_db_write_text_exit(struct pmap_db_write_text_context *ctx)
+pmap_write_text_exit(struct pmap_write_text_context *ctx)
 {
 	pte_store(ctx->ptep, ctx->opte);
 	TBIS(ctx->pgva);
 }
-#endif /* DDB || KGDB */
 
 static paddr_t kernel_reloc_offset;
 static vaddr_t kernel_reloc_end;
@@ -3964,6 +4011,7 @@ __CTASSERT(VM_MIN_KERNEL_ADDRESS == 0);
  */
 
 static vaddr_t	lwp0uarea;
+       paddr_t	lwp0upa = (paddr_t)-1;
        char *	vmmap;
 
 /* XXX Doesn't belong here. */
@@ -3998,7 +4046,7 @@ extern void *	msgbufaddr;
 paddr_t __attribute__((no_instrument_function))
 pmap_bootstrap1(paddr_t nextpa, paddr_t reloff)
 {
-	paddr_t lwp0upa, stnext_endpa, stnext_pa;
+	paddr_t stnext_endpa, stnext_pa;
 	paddr_t pa, kernimg_endpa, kern_lev1pa;
 	vaddr_t va, nextva, kern_lev1va;
 	pt_entry_t *pte, *epte;
@@ -4060,16 +4108,19 @@ pmap_bootstrap1(paddr_t nextpa, paddr_t reloff)
 	pt_entry_t proto_rw_ci_pte;	/* read-write, cache-inhibited */
 	pt_entry_t proto_ste;
 
+	/*
+	 * N.B. PTE40_CM_WT == 0, so "write-though" caching has the same
+	 * PTE bits on all variants of the MMU.
+	 */
+	proto_ro_pte     = PTE_VALID|PTE_WIRED|PTE_WP;
+	proto_rw_cwt_pte = PTE_VALID|PTE_WIRED;
+
 	if (is_68040_class) {
-		proto_ro_pte     = PTE_VALID|PTE_WIRED|PTE_WP|PTE40_CM_WT;
-		proto_rw_pte     = PTE_VALID|PTE_WIRED       |PTE40_CM_CB;
-		proto_rw_cwt_pte = PTE_VALID|PTE_WIRED       |PTE40_CM_WT;
-		proto_rw_ci_pte  = PTE_VALID|PTE_WIRED       |PTE40_CM_NC_SER;
+		proto_rw_pte    = PTE_VALID|PTE_WIRED|PTE40_CM_CB;
+		proto_rw_ci_pte = PTE_VALID|PTE_WIRED|PTE40_CM_NC_SER;
 	} else {
-		proto_ro_pte     = PTE_VALID|PTE_WIRED|PTE_WP;
-		proto_rw_pte     = PTE_VALID|PTE_WIRED;
-		proto_rw_cwt_pte = PTE_VALID|PTE_WIRED;
-		proto_rw_ci_pte  = PTE_VALID|PTE_WIRED       |PTE51_CI;
+		proto_rw_pte    = PTE_VALID|PTE_WIRED;
+		proto_rw_ci_pte = PTE_VALID|PTE_WIRED|PTE51_CI;
 	}
 	proto_ste = DTE51_U | DT51_SHORT;
 
@@ -4125,11 +4176,15 @@ pmap_bootstrap1(paddr_t nextpa, paddr_t reloff)
 	kernimg_endpa = nextpa;
 
 	/*
-	 * lwp0 u-area.  We allocate it here, and finish setting it
-	 * up in pmap_bootstrap2().
+	 * lwp0 u-area.  If the caller hasn't already told us where
+	 * to put it (heh), then allocate it here.
+	 *
+	 * In either case, we finish setting it up in pmap_bootstrap2().
 	 */
-	lwp0upa = nextpa;
-	nextpa += USPACE;
+	if (RELOC(lwp0upa, paddr_t) == (paddr_t)-1) {
+		RELOC(lwp0upa, paddr_t) = nextpa;
+		nextpa += USPACE;
+	}
 	RELOC(lwp0uarea, vaddr_t) = nextva;
 	nextva += USPACE;
 
@@ -4366,7 +4421,7 @@ pmap_bootstrap1(paddr_t nextpa, paddr_t reloff)
 	}
 
 	/* lwp0 u-area - read-write. */
-	pa = lwp0upa;
+	pa = RELOC(lwp0upa, paddr_t);
 	pte = VA_PTE_BASE(RELOC(lwp0uarea, vaddr_t), var);
 	epte = VA_PTE_BASE(RELOC(lwp0uarea, vaddr_t) + USPACE, var);
 	while (pte < epte) {
@@ -4444,6 +4499,8 @@ pmap_bootstrap1(paddr_t nextpa, paddr_t reloff)
 			proto = proto_rw_pte;
 			break;
 		}
+		/* Add in any special PTE bits that might be required. */
+		proto |= (pmbm->pmbm_flags & PMBM_F_PTEBITS);
 		for (vsize_t size = m68k_round_page(pmbm->pmbm_size);
 		     size != 0;
 		     va += PAGE_SIZE, pa += PAGE_SIZE, size -= PAGE_SIZE) {
@@ -4552,11 +4609,17 @@ pmap_bootstrap1(paddr_t nextpa, paddr_t reloff)
 __CTASSERT(PAGE_SIZE != 0);
 
 /*
+ * This serves to provide assurance that other bits of m68k code can
+ * assume that USPACE is 8KB in size.
+ */
+__CTASSERT(USPACE == 8192);
+
+/*
  * pmap_bootstrap2:
  *
  *	Phase 2 of bootstrapping virtual memory.  This is called after
  *	the MMU has been enabled to finish setting up run-time-computed
- *	global pmap data, plus the lwp0 u-area, curlwp, and curpcb.
+ *	global pmap data and the lwp0 u-area.
  *
  *	Returns the new kernel %sp value for lwp0.
  */
@@ -4576,11 +4639,9 @@ pmap_bootstrap2(void)
 	/* Initialize the kernel pmap. */
 	pmap_pinit(pmap_kernel(), Sysseg_pa);
 
-	/* Initialize lwp0 u-area, curlwp, and curpcb. */
+	/* Initialize lwp0 u-area. */
 	memset((void *)lwp0uarea, 0, USPACE);
 	uvm_lwp_setuarea(&lwp0, lwp0uarea);
-	curlwp = &lwp0;
-	curpcb = lwp_getpcb(&lwp0);
 
 	/* Create a fake exception frame so that cpu_lwp_fork() can copy it. */
 	struct trapframe *tf = (struct trapframe *)(lwp0uarea + USPACE) - 1;

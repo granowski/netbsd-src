@@ -1,4 +1,4 @@
-/* $NetBSD: exynos_uart.c,v 1.8 2025/09/06 22:53:47 thorpej Exp $ */
+/* $NetBSD: exynos_uart.c,v 1.10 2026/11/10 03:04:58 thorpej Exp $ */
 
 /*-
  * Copyright (c) 2013-2021 The NetBSD Foundation, Inc.
@@ -33,13 +33,7 @@
 
 #include <sys/cdefs.h>
 
-__KERNEL_RCSID(1, "$NetBSD: exynos_uart.c,v 1.8 2025/09/06 22:53:47 thorpej Exp $");
-
-#define cn_trap()			\
-	do {				\
-		console_debugger();	\
-		cn_trapped = 1;		\
-	} while (/* CONSTCOND */ 0)
+__KERNEL_RCSID(1, "$NetBSD: exynos_uart.c,v 1.10 2026/11/10 03:04:58 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/bus.h>
@@ -52,8 +46,6 @@ __KERNEL_RCSID(1, "$NetBSD: exynos_uart.c,v 1.8 2025/09/06 22:53:47 thorpej Exp 
 #include <sys/kauth.h>
 #include <sys/lwp.h>
 #include <sys/tty.h>
-
-#include <ddb/db_active.h>
 
 #include <dev/cons.h>
 
@@ -314,10 +306,8 @@ exynos_uart_cngetc(dev_t dev)
 	}
 
 	c = RD4(sc, SSCOM_URXH);
-	if (!db_active) {
-		int cn_trapped __unused = 0;
-		cn_check_magic(dev, c & 0xff, exynos_uart_cnm_state);
-	}
+
+	cn_check_magic(dev, c & 0xff, &exynos_uart_cnm_state);
 
 	splx(s);
 
@@ -601,14 +591,12 @@ exynos_uart_intr(void *priv)
 	}
 
 	for (;;) {
-		int cn_trapped = 0;
-
 		uerstat = RD4(sc, SSCOM_UERSTAT);
 		if (uerstat & UERSTAT_BREAK) {
-			cn_check_magic(tp->t_dev, CNC_BREAK,
-			    exynos_uart_cnm_state);
-			if (cn_trapped)
+			if (cn_check_magic(tp->t_dev, CNC_BREAK,
+			    &exynos_uart_cnm_state)) {
 				continue;
+			}
 		}
 
 		ufstat = RD4(sc, SSCOM_UFSTAT);
@@ -617,9 +605,10 @@ exynos_uart_intr(void *priv)
 		}
 
 		c = RD4(sc, SSCOM_URXH);
-		cn_check_magic(tp->t_dev, c & 0xff, exynos_uart_cnm_state);
-		if (cn_trapped)
+		if (cn_check_magic(tp->t_dev, c & 0xff,
+				   &exynos_uart_cnm_state)) {
 			continue;
+		}
 		tp->t_linesw->l_rint(c & 0xff, tp);
 	}
 

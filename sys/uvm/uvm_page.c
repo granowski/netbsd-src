@@ -1,4 +1,4 @@
-/*	$NetBSD: uvm_page.c,v 1.257 2026/05/03 16:02:37 thorpej Exp $	*/
+/*	$NetBSD: uvm_page.c,v 1.259 2026/11/10 03:43:28 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2019, 2020 The NetBSD Foundation, Inc.
@@ -95,7 +95,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uvm_page.c,v 1.257 2026/05/03 16:02:37 thorpej Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uvm_page.c,v 1.259 2026/11/10 03:43:28 thorpej Exp $");
 
 #include "opt_ddb.h"
 #include "opt_uvm.h"

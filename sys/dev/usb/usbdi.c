@@ -1,4 +1,4 @@
-/*	$NetBSD: usbdi.c,v 1.255 2025/10/11 12:54:40 skrll Exp $	*/
+/*	$NetBSD: usbdi.c,v 1.257 2026/11/10 03:43:27 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1998, 2012, 2015 The NetBSD Foundation, Inc.
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: usbdi.c,v 1.255 2025/10/11 12:54:40 skrll Exp $");
+__KERNEL_RCSID(0, "$NetBSD: usbdi.c,v 1.257 2026/11/10 03:43:27 thorpej Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -50,6 +50,8 @@ __KERNEL_RCSID(0, "$NetBSD: usbdi.c,v 1.255 2025/10/11 12:54:40 skrll Exp $");
 #include <sys/proc.h>
 #include <sys/systm.h>
 
+#include <ddb/db_active.h>
+
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
 #include <dev/usb/usbdi_util.h>
@@ -58,8 +60,6 @@ __KERNEL_RCSID(0, "$NetBSD: usbdi.c,v 1.255 2025/10/11 12:54:40 skrll Exp $");
 #include <dev/usb/usb_quirks.h>
 #include <dev/usb/usb_sdt.h>
 #include <dev/usb/usbhist.h>
-
-#include <ddb/db_active.h>
 
 /* UTF-8 encoding stuff */
 #include <fs/unicode.h>

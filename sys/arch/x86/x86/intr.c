@@ -1,4 +1,4 @@
-/*	$NetBSD: intr.c,v 1.169 2024/09/11 05:17:45 mrg Exp $	*/
+/*	$NetBSD: intr.c,v 1.171 2026/11/10 03:43:27 thorpej Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008, 2009, 2019 The NetBSD Foundation, Inc.
@@ -133,7 +133,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.169 2024/09/11 05:17:45 mrg Exp $");
+__KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.171 2026/11/10 03:43:27 thorpej Exp $");
 
 #include "opt_acpi.h"
 #include "opt_intrdebug.h"
@@ -157,6 +157,8 @@ __KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.169 2024/09/11 05:17:45 mrg Exp $");
 
 #include <sys/kauth.h>
 #include <sys/conf.h>
+
+#include <ddb/db_active.h>
 
 #include <uvm/uvm_extern.h>
 
@@ -199,8 +201,6 @@ extern void Xrecurse_hyperv_hypercall(void);
 #if NPCI == 0 || !defined(__HAVE_PCI_MSI_MSIX)
 #define msipic_is_msi_pic(PIC)	(false)
 #endif
-
-#include <ddb/db_active.h>
 
 #ifdef DDB
 #include <ddb/db_output.h>

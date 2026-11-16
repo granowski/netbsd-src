@@ -1,4 +1,4 @@
-/*	$NetBSD: db_interface.c,v 1.37 2026/03/28 04:08:40 thorpej Exp $	*/
+/*	$NetBSD: db_interface.c,v 1.39 2026/11/10 03:43:26 thorpej Exp $	*/
 
 /*
  * Mach Operating System
@@ -31,12 +31,12 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.37 2026/03/28 04:08:40 thorpej Exp $");
+__KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.39 2026/11/10 03:43:26 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/reboot.h>
-#include <sys/systm.h> /* just for boothowto --eichin */
+#include <sys/systm.h>
 
 #include <uvm/uvm_extern.h>
 
@@ -52,7 +52,6 @@ __KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.37 2026/03/28 04:08:40 thorpej Ex
 #include <ddb/db_extern.h>
 #endif
 
-int	db_active = 0;
 db_regs_t	ddb_regs;
 
 #ifdef _KERNEL

@@ -1,4 +1,4 @@
-/*      $NetBSD: raidctl.c,v 1.90 2026/10/18 14:56:32 tls Exp $   */
+/*      $NetBSD: raidctl.c,v 1.92 2026/11/08 15:44:17 christos Exp $   */
 
 /*-
  * Copyright (c) 1996, 1997, 1998 The NetBSD Foundation, Inc.
@@ -39,7 +39,7 @@
 #include <sys/cdefs.h>
 
 #ifndef lint
-__RCSID("$NetBSD: raidctl.c,v 1.90 2026/10/18 14:56:32 tls Exp $");
+__RCSID("$NetBSD: raidctl.c,v 1.92 2026/11/08 15:44:17 christos Exp $");
 #endif
 
 
@@ -151,7 +151,7 @@ main(int argc,char *argv[])
 			if (fstat(fd, &st) == -1)
 				err(1, "stat failure on: %s", dev_name);
 			if (!S_ISBLK(st.st_mode) && !S_ISCHR(st.st_mode))
-				err(1, "invalid device: %s", dev_name);
+				errx(1, "invalid device: %s", dev_name);
 
 			raidID = DISKUNIT(st.st_rdev);
 			if (strncmp(argv[2],"create",6)==0) {
@@ -350,7 +350,7 @@ main(int argc,char *argv[])
 	if (prog_fstat(fd, &st) == -1)
 		err(1, "stat failure on: %s", dev_name);
 	if (!S_ISBLK(st.st_mode) && !S_ISCHR(st.st_mode))
-		err(1, "invalid device: %s", dev_name);
+		errx(1, "invalid device: %s", dev_name);
 
 	raidID = DISKUNIT(st.st_rdev);
 
@@ -476,6 +476,8 @@ device_status(RF_DiskStatus_t status)
 		return ("spare");
 	case rf_ds_used_spare:
 		return ("used_spare");
+	case rf_ds_rebuilding_spare:
+		return ("rebuilding_spare");
 	default:
 		return ("UNKNOWN");
 	}
@@ -644,7 +646,7 @@ rf_pm_configure(int fd, int raidID, char *parityconf, int parityparams[])
 		return;
 		/* XXX the control flow here could be prettier. */
 	} else
-		err(1, "`%s' is not a valid parity map command", parityconf);
+		errx(1, "`%s' is not a valid parity map command", parityconf);
 
 	do_ioctl(fd, RAIDFRAME_PARITYMAP_SET_DISABLE, &dis,
 	    "RAIDFRAME_PARITYMAP_SET_DISABLE");
@@ -681,9 +683,15 @@ rf_output_configuration(int fd, const char *name)
 	nspares = MIN(device_config.nspares,
 	                __arraycount(device_config.spares));
 
+	int active_spares = 0;
+	for (i = 0; i < nspares; i++) {
+		if (device_config.spares[i].status == rf_ds_spare)
+			active_spares++;
+	}
+
 	printf("START array\n");
 	printf("# numCol numSpare\n");
-	printf("%d %d\n", device_config.cols, device_config.nspares);
+	printf("%d %d\n", device_config.cols, active_spares);
 	printf("\n");
 
 	printf("START disks\n");
@@ -692,10 +700,13 @@ rf_output_configuration(int fd, const char *name)
 		    rf_output_devname(device_config.devs[i].devname));
 	printf("\n");
 
-	if (nspares > 0) {
+	if (active_spares > 0) {
 		printf("START spare\n");
-		for(i=0; i < nspares; i++)
-			printf("%s\n", device_config.spares[i].devname);
+		for(i=0; i < nspares; i++) {
+			if (device_config.spares[i].status == rf_ds_spare)
+				printf("%s\n",
+				    device_config.spares[i].devname);
+		}
 		printf("\n");
 	}
 
@@ -775,7 +786,7 @@ get_component_number(int fd, char *component_name, int *component_number,
 	}
 
 	if (!found)
-		err(1,"%s is not a component of this device", component_name);
+		errx(1, "%s is not a component of this device", component_name);
 }
 
 static void

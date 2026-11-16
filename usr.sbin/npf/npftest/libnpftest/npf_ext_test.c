@@ -1,0 +1,198 @@
+
+/*-
+ * Copyright (c) 2026 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Emmanuel Nyarko.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * NPF tests of extension.
+ */
+
+#ifdef _KERNEL
+#include <sys/types.h>
+#endif
+
+#include "npf_impl.h"
+#include "npf_test.h"
+
+static const struct test_case {
+	const char *	src;
+	in_port_t	sport;
+	const char *	dst;
+	in_port_t	dport;
+	const char *	ifname;
+	int		di;
+	int		af;
+} test_cases[] = {
+	{
+		LOCAL_IP60,	15000,		LOCAL_IP70,	7000,
+		IFNAME_EXT,	PFIL_OUT,	AF_INET
+	},
+	{
+		LOCAL_IP60,	15040,		LOCAL_IP70,	6000,
+		IFNAME_EXT,	PFIL_OUT,	AF_INET
+	},
+
+};
+
+#define TCP_OPT_LEN 4
+static struct mbuf *
+mbuf_get_pkt_with_option(int af, int proto, const char *src, const char *dst,
+    int sport, int dport)
+{
+	struct mbuf *m;
+	struct ip *ip;
+	struct tcphdr *th;
+	void *ipsrc, *ipdst;
+	int size = 0;
+	uint8_t *opt;
+	uint16_t mss = 1400;
+
+	m = m_gethdr(M_WAITOK, MT_HEADER);
+	ip = mtod(m, struct ip *);
+
+	ip->ip_v = IPVERSION;
+	ip->ip_hl = sizeof(struct ip) >> 2;
+	ip->ip_off = 0;
+	ip->ip_ttl = 64;
+	ip->ip_p = proto;
+
+	ipsrc = &ip->ip_src.s_addr;
+	ipdst = &ip->ip_dst.s_addr;
+
+	npf_inet_pton(af, src, ipsrc);
+	npf_inet_pton(af, dst, ipdst);
+
+	th = mbuf_return_hdrs(m, false, &ip);
+	size = sizeof(struct ip) + sizeof(struct tcphdr) + TCP_OPT_LEN;
+	th->th_flags |= TH_SYN;
+	th->th_off = (sizeof(struct tcphdr) + TCP_OPT_LEN)  >> 2;
+	th->th_sport = htons(sport);
+	th->th_dport = htons(dport);
+
+	opt = (uint8_t *)th + sizeof(struct tcphdr);
+	opt[0] = TCPOPT_MAXSEG;         /* Kind = 2 */
+	opt[1] = TCPOLEN_MAXSEG;        /* Length = 4 */
+	opt[2] = (mss >> 8) & 0xff;    /* 0x05 */
+	opt[3] = mss & 0xff;           /* 0x29 */
+
+	ip->ip_len = htons(size);
+
+	m->m_pkthdr.len = size;
+	m->m_len = size;
+	m->m_next = NULL;
+	return m;
+}
+
+static int
+run_raw_testcase(npf_cache_t *npc, unsigned i, bool verbose)
+{
+	const struct test_case *t = &test_cases[i];
+	npf_t *npf = npf_getkernctx();
+	int slock, error;
+	npf_rproc_t *rp;
+	npf_rule_t *rl;
+	npf_match_info_t mi;
+	int decision = 1;
+
+	slock = npf_config_read_enter(npf);
+	rl = npf_ruleset_inspect(npc, npf_config_ruleset(npf), t->di, NPF_RULE_LAYER_3);
+	if (rl) {
+		error = npf_rule_conclude(rl, &mi);
+	} else {
+		error = ENOENT;
+	}
+	npf_config_read_exit(npf, slock);
+
+	if (error)
+		return error;
+
+	rp = npf_rule_getrproc(rl);
+	assert(rp != NULL);
+
+	error = npf_rproc_run(npc, rp, &mi, &decision);
+
+	if (error == 1) {
+		npf_rproc_release(rp);
+	}
+
+	return error;
+}
+
+static void
+npf_get_normalize_params(npf_cache_t *npc, uint16_t *ip_ttl, uint8_t *ip_id, int *ip_off, uint16_t *maxmss)
+{
+    int wscale;
+    struct ip *ip = npc->npc_ip.v4;
+    *ip_id = ip->ip_id;
+    *ip_ttl = ip->ip_ttl;
+    *ip_off = ntohs(ip->ip_off);
+    npf_fetch_tcpopts(npc, maxmss, &wscale);
+}
+
+bool
+npf_procedure_test(bool verbose)
+{
+	int ret;
+	for (unsigned i = 0; i < __arraycount(test_cases); i++) {
+		const struct test_case *t = &test_cases[i];
+		npf_cache_t *npc;
+		struct mbuf *m;
+		uint16_t ip_ttl;
+    	uint8_t ip_id;
+    	int ip_off;
+    	uint16_t maxmss;
+
+		if (npf_test_getif(t->ifname) == NULL) {
+			printf("Interface %s is not configured.\n", t->ifname);
+			return false;
+		}
+
+		m = mbuf_get_pkt_with_option(t->af, IPPROTO_TCP, t->src, t->dst, 9000, 9000);
+		npc = get_cached_pkt(m, t->ifname,  NPF_RULE_LAYER_3);
+
+		ret = run_raw_testcase(npc, i, verbose);
+		if (verbose) {
+			printf("%s: expected return in raw testcase 1, returned %d\n", __func__, ret);
+		}
+		CHECK_TRUE(ret == 1);
+
+		npf_get_normalize_params(npc, &ip_ttl, &ip_id, &ip_off, &maxmss);
+		maxmss = ntohs(maxmss);
+
+		if (verbose) {
+			printf("Normalization:\texpected 164 ttl but got %u\n", ip_ttl);
+			printf("Normalization:\texpected 1321 maxmss but got %u\n", maxmss);
+		}
+		CHECK_TRUE((ip_off & IP_DF) == 0);
+    	CHECK_TRUE(maxmss == 1321);
+		CHECK_TRUE(ip_ttl == 164);
+		put_cached_pkt(npc);
+	}
+
+	return true;
+}

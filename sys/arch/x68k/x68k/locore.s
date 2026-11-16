@@ -1,4 +1,4 @@
-/*	$NetBSD: locore.s,v 1.163 2026/04/28 03:29:11 thorpej Exp $	*/
+/*	$NetBSD: locore.s,v 1.165 2026/11/13 21:05:23 thorpej Exp $	*/
 
 /*
  * Copyright (c) 1988 University of Utah.
@@ -133,7 +133,7 @@ ASENTRY_NOPROFILE(start)
 #endif
 
 	ASRELOC(tmpstk, %a0)
-	movl	%a0,%sp			| give ourselves a temporary stack
+	INIT_KSP(%a0)			| give ourselves a temporary stack
 	RELOC(esym, %a0)
 #if 1
 	movl	%a4,%a0@		| store end of symbol table
@@ -299,13 +299,13 @@ Lmotommu2:
  * Should be running mapped from this point on
  */
 Lenab1:
-	lea	_ASM_LABEL(tmpstk),%sp	| temporary stack
+	lea	_ASM_LABEL(tmpstk),%a0	| re-load the temporary stack
+	INIT_KSP(%a0)
 	jbsr	_C_LABEL(vec_init)	| initialize the vector table
 
 	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
 	jbsr	_C_LABEL(pmap_bootstrap2)
-	movl	%a0,%sp			| now running on lwp0's stack
-	movl	#0,%a6			| terminate the stack back trace
+	INIT_KSP(%a0)			| now running on lwp0's stack
 
 	cmpl	#MMU_68040,_C_LABEL(mmutype)	| 68040?
 	jeq	Ltbia040		| yes, cache already on
@@ -339,14 +339,14 @@ ENTRY_NOPROFILE(kbdtimer)
 	rte
 
 ENTRY_NOPROFILE(intiotrap)
-	addql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_INCR
 	INTERRUPT_SAVEREG
 	pea	%sp@(16-(FR_HW))	| XXX
 	jbsr	_C_LABEL(intio_intr)
 	addql	#4,%sp
 	CPUINFO_INCREMENT(CI_NINTR)
 	INTERRUPT_RESTOREREG
-	subql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_DECR
 	jra	rei
 
 ENTRY_NOPROFILE(lev1intr)
@@ -355,7 +355,7 @@ ENTRY_NOPROFILE(lev3intr)
 ENTRY_NOPROFILE(lev4intr)
 ENTRY_NOPROFILE(lev5intr)
 ENTRY_NOPROFILE(lev6intr)
-	addql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_INCR
 	INTERRUPT_SAVEREG
 Lnotdma:
 	lea	_C_LABEL(intrcnt),%a0
@@ -368,11 +368,11 @@ Lnotdma:
 	addql	#4,%sp			| pop SR
 	CPUINFO_INCREMENT(CI_NINTR)
 	INTERRUPT_RESTOREREG
-	subql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_DECR
 	jra	_ASM_LABEL(rei)
 
 ENTRY_NOPROFILE(timertrap)
-	addql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_INCR
 	INTERRUPT_SAVEREG		| save scratch registers
 	addql	#1,_C_LABEL(intrcnt)+32	| count hardclock interrupts
 	movl	%sp,%sp@-		| push pointer to clockframe
@@ -380,11 +380,11 @@ ENTRY_NOPROFILE(timertrap)
 	addql	#4,%sp
 	CPUINFO_INCREMENT(CI_NINTR)	| chalk up another interrupt
 	INTERRUPT_RESTOREREG		| restore scratch registers
-	subql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_DECR
 	jra	_ASM_LABEL(rei)		| all done
 
 ENTRY_NOPROFILE(lev7intr)
-	addql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_INCR
 	addql	#1,_C_LABEL(intrcnt)+28
 	clrl	%sp@-
 	moveml	#0xFFFF,%sp@-		| save registers
@@ -395,7 +395,7 @@ ENTRY_NOPROFILE(lev7intr)
 	movl	%a0,%usp		|   user SP
 	moveml	%sp@+,#0x7FFF		| and remaining registers
 	addql	#8,%sp			| pop SP and stack adjust
-	subql	#1,_C_LABEL(intr_depth)
+	INTR_DEPTH_DECR
 	jra	_ASM_LABEL(rei)		| all done
 
 /*

@@ -1,4 +1,4 @@
-/*	$NetBSD: db_interface.c,v 1.101 2026/02/25 05:34:42 skrll Exp $	*/
+/*	$NetBSD: db_interface.c,v 1.103 2026/11/10 03:43:26 thorpej Exp $	*/
 
 /*
  * Mach Operating System
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.101 2026/02/25 05:34:42 skrll Exp $");
+__KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.103 2026/11/10 03:43:26 thorpej Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_multiprocessor.h"
@@ -73,10 +73,6 @@ __KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.101 2026/02/25 05:34:42 skrll Exp
 
 #define NOCPU   ~0
 volatile u_int ddb_cpu = NOCPU;
-
-#ifdef DDB
-int		db_active = 0;
-#endif
 
 #ifdef _KERNEL
 db_regs_t	ddb_regs;

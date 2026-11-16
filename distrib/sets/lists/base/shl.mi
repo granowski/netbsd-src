@@ -1,4 +1,4 @@
-# $NetBSD: shl.mi,v 1.1052 2026/10/07 17:33:52 christos Exp $
+# $NetBSD: shl.mi,v 1.1056 2026/11/07 16:17:51 wiz Exp $
 #
 # Note:	Don't delete entries from here - mark them as "obsolete" instead,
 #	unless otherwise stated below.
@@ -27,14 +27,8 @@
 ./lib/libcrypt.so.1				base-sys-shlib		dynamicroot
 ./lib/libcrypt.so.1.0				base-sys-shlib		dynamicroot
 ./lib/libcrypto.so				base-crypto-shlib	dynamicroot
-./lib/libcrypto.so.12				base-crypto-shlib	dynamicroot,openssl=10
-./lib/libcrypto.so.12.0				base-crypto-shlib	dynamicroot,openssl=10
-./lib/libcrypto.so.14				base-crypto-shlib	dynamicroot,openssl=11
-./lib/libcrypto.so.14.1				base-crypto-shlib	dynamicroot,openssl=11
-./lib/libcrypto.so.15				base-crypto-shlib       dynamicroot,openssl=30
-./lib/libcrypto.so.15.0				base-crypto-shlib       dynamicroot,openssl=30
-./lib/libcrypto.so.16				base-crypto-shlib       dynamicroot,openssl=35
-./lib/libcrypto.so.16.0				base-crypto-shlib       dynamicroot,openssl=35
+./lib/libcrypto.so.16				base-crypto-shlib       dynamicroot
+./lib/libcrypto.so.16.0				base-crypto-shlib       dynamicroot
 ./lib/libdevmapper.so				base-lvm-shlib		dynamicroot,lvm
 ./lib/libdevmapper.so.1				base-lvm-shlib		dynamicroot,lvm
 ./lib/libdevmapper.so.1.0			base-lvm-shlib		dynamicroot,lvm
@@ -231,12 +225,6 @@
 ./usr/lib/libavl.so				base-zfs-shlib		compatfile,zfs
 ./usr/lib/libavl.so.0				base-zfs-shlib		compatfile,zfs
 ./usr/lib/libavl.so.0.0          		base-zfs-shlib		compatfile,zfs
-./usr/lib/libbfd.so.16				base-sys-shlib		compatfile,binutils=231
-./usr/lib/libbfd.so.16.0			base-sys-shlib		compatfile,binutils=231
-./usr/lib/libbfd.so.17				base-sys-shlib		compatfile,binutils=234
-./usr/lib/libbfd.so.17.0			base-sys-shlib		compatfile,binutils=234
-./usr/lib/libbfd.so.18				base-sys-shlib		compatfile,binutils=239
-./usr/lib/libbfd.so.18.0			base-sys-shlib		compatfile,binutils=239
 ./usr/lib/libbfd.so.19				base-sys-shlib		compatfile,binutils=242
 ./usr/lib/libbfd.so.19.0			base-sys-shlib		compatfile,binutils=242
 ./usr/lib/libbfd.so.20				base-sys-shlib		compatfile,binutils=245
@@ -279,14 +267,8 @@
 ./usr/lib/libcrypt.so.1				base-sys-shlib		compatfile
 ./usr/lib/libcrypt.so.1.0			base-sys-shlib		compatfile
 ./usr/lib/libcrypto.so				base-crypto-shlib	compatfile
-./usr/lib/libcrypto.so.12			base-crypto-shlib	compatfile,openssl=10
-./usr/lib/libcrypto.so.12.0			base-crypto-shlib	compatfile,openssl=10
-./usr/lib/libcrypto.so.14			base-crypto-shlib	compatfile,openssl=11
-./usr/lib/libcrypto.so.14.1			base-crypto-shlib	compatfile,openssl=11
-./usr/lib/libcrypto.so.15			base-crypto-shlib	compatfile,openssl=30
-./usr/lib/libcrypto.so.15.0			base-crypto-shlib	compatfile,openssl=30
-./usr/lib/libcrypto.so.16			base-crypto-shlib	compatfile,openssl=35
-./usr/lib/libcrypto.so.16.0			base-crypto-shlib	compatfile,openssl=35
+./usr/lib/libcrypto.so.16			base-crypto-shlib	compatfile
+./usr/lib/libcrypto.so.16.0			base-crypto-shlib	compatfile
 ./usr/lib/libcrypto_idea.so			base-obsolete		compatfile,obsolete
 ./usr/lib/libcrypto_mdc2.so			base-obsolete		compatfile,obsolete
 ./usr/lib/libcrypto_rc5.so			base-obsolete		compatfile,obsolete
@@ -297,14 +279,8 @@
 ./usr/lib/libcurses.so.9			base-sys-shlib		compatfile
 ./usr/lib/libcurses.so.9.2			base-sys-shlib		compatfile
 ./usr/lib/libdes.so				base-crypto-shlib	compatfile
-./usr/lib/libdes.so.12				base-crypto-shlib	compatfile,openssl=10
-./usr/lib/libdes.so.12.0				base-crypto-shlib	compatfile,openssl=10
-./usr/lib/libdes.so.14				base-crypto-shlib	compatfile,openssl=11
-./usr/lib/libdes.so.14.0				base-crypto-shlib	compatfile,openssl=11
-./usr/lib/libdes.so.15				base-crypto-shlib	compatfile,openssl=30
-./usr/lib/libdes.so.15.0			base-crypto-shlib	compatfile,openssl=30
-./usr/lib/libdes.so.16				base-crypto-shlib	compatfile,openssl=35
-./usr/lib/libdes.so.16.0			base-crypto-shlib	compatfile,openssl=35
+./usr/lib/libdes.so.16				base-crypto-shlib	compatfile
+./usr/lib/libdes.so.16.0			base-crypto-shlib	compatfile
 ./usr/lib/libdevmapper.so			base-lvm-shlib		compatfile,lvm
 ./usr/lib/libdevmapper.so.1			base-lvm-shlib		compatfile,lvm
 ./usr/lib/libdevmapper.so.1.0			base-lvm-shlib		compatfile,lvm
@@ -475,8 +451,8 @@
 ./usr/lib/libmagic.so.9				base-sys-shlib		compatfile
 ./usr/lib/libmagic.so.9.0			base-sys-shlib		compatfile
 ./usr/lib/libmenu.so				base-sys-shlib		compatfile
-./usr/lib/libmenu.so.8				base-sys-shlib		compatfile
-./usr/lib/libmenu.so.8.0			base-sys-shlib		compatfile
+./usr/lib/libmenu.so.9				base-sys-shlib		compatfile
+./usr/lib/libmenu.so.9.0			base-sys-shlib		compatfile
 ./usr/lib/libmj.so				base-crypto-shlib	compatfile
 ./usr/lib/libmj.so.1				base-crypto-shlib	compatfile
 ./usr/lib/libmj.so.1.0				base-crypto-shlib	compatfile
@@ -906,14 +882,8 @@
 ./usr/lib/libss.so				base-obsolete		obsolete
 ./usr/lib/libssh.so				base-obsolete		obsolete
 ./usr/lib/libssl.so				base-crypto-shlib	compatfile
-./usr/lib/libssl.so.12				base-crypto-shlib	compatfile,openssl=10
-./usr/lib/libssl.so.12.0			base-crypto-shlib	compatfile,openssl=10
-./usr/lib/libssl.so.14				base-crypto-shlib	compatfile,openssl=11
-./usr/lib/libssl.so.14.0			base-crypto-shlib	compatfile,openssl=11
-./usr/lib/libssl.so.15				base-crypto-shlib	compatfile,openssl=30
-./usr/lib/libssl.so.15.0			base-crypto-shlib	compatfile,openssl=30
-./usr/lib/libssl.so.16				base-crypto-shlib	compatfile,openssl=35
-./usr/lib/libssl.so.16.0			base-crypto-shlib	compatfile,openssl=35
+./usr/lib/libssl.so.16				base-crypto-shlib	compatfile
+./usr/lib/libssl.so.16.0			base-crypto-shlib	compatfile
 ./usr/lib/libstdc++.so				base-sys-shlib		compatfile,gcc,cxx,libstdcxx
 ./usr/lib/libstdc++.so.9			base-sys-shlib		compatfile,gcc,cxx,libstdcxx
 ./usr/lib/libstdc++.so.9.0			base-sys-shlib		compatfile,gcc,cxx,libstdcxx,gcc=10
@@ -953,7 +923,7 @@
 ./usr/lib/libumem.so.0.0			base-zfs-shlib		compatfile,zfs
 ./usr/lib/libunbound.so				base-sys-shlib		compatfile,unbound
 ./usr/lib/libunbound.so.11			base-sys-shlib		compatfile,unbound
-./usr/lib/libunbound.so.11.2			base-sys-shlib		compatfile,unbound
+./usr/lib/libunbound.so.11.3			base-sys-shlib		compatfile,unbound
 ./usr/lib/libusbhid.so				base-sys-shlib		usb,compatfile
 ./usr/lib/libusbhid.so.1			base-sys-shlib		usb,compatfile
 ./usr/lib/libusbhid.so.1.0			base-sys-shlib		usb,compatfile

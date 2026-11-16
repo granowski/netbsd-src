@@ -1,4 +1,4 @@
-/*	$NetBSD: zs.c,v 1.92 2024/12/20 23:52:00 tsutsui Exp $	*/
+/*	$NetBSD: zs.c,v 1.94 2026/11/10 17:08:40 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 1996 The NetBSD Foundation, Inc.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: zs.c,v 1.92 2024/12/20 23:52:00 tsutsui Exp $");
+__KERNEL_RCSID(0, "$NetBSD: zs.c,v 1.94 2026/11/10 17:08:40 thorpej Exp $");
 
 #include "opt_kgdb.h"
 
@@ -551,7 +551,7 @@ void *zs_conschan;
  * Handle user request to enter kernel debugger.
  */
 void
-zs_abort(struct zs_chanstate *cs)
+zs_abort(void)
 {
 	volatile struct zschan *zc = zs_conschan;
 	int rr0;
@@ -564,7 +564,7 @@ zs_abort(struct zs_chanstate *cs)
 	} while (rr0 & ZSRR0_BREAK);
 
 	/* This is always available on the Sun3. */
-	Debugger();
+	cpu_Debugger();
 }
 
 /*
