@@ -2493,6 +2493,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 	memset(&path, 0, sizeof(path));
 	curr_paddr = root_paddr;
+	oid_t curr_oid = *tree_oid;
 
 	/* 1. Navigate from root to leaf, recording path */
 	while (curr_paddr != 0 && path.bp_depth < APFS_BTREE_MAX_DEPTH) {
@@ -2515,6 +2516,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		}
 
 		path.bp_entries[path.bp_depth].pe_paddr = curr_paddr;
+		path.bp_entries[path.bp_depth].pe_oid = curr_oid;
 		path.bp_entries[path.bp_depth].pe_flags = flags;
 
 		if (level == 0 || (flags & BTNODE_LEAF) != 0) {
@@ -2577,6 +2579,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
 		brelse(bp, 0);
 
+		curr_oid = child_oid;
 		error = apfs_btree_resolve_child(amp, omap_oid, tx, tx->tx_xid,
 		    tree_flags, child_oid, &curr_paddr);
 		if (error != 0)
@@ -2591,6 +2594,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 	/* 2. Insert into leaf node with Copy-on-Write and Node Splitting */
 	uint32_t leaf_depth = path.bp_depth - 1;
 	apfs_paddr_t old_leaf_paddr = path.bp_entries[leaf_depth].pe_paddr;
+	oid_t leaf_oid = path.bp_entries[leaf_depth].pe_oid;
 	uint32_t ins_idx = path.bp_entries[leaf_depth].pe_idx;
 
 	error = apfs_bread(amp, old_leaf_paddr, &bp);
@@ -2662,7 +2666,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		btree_node_phys_t *new_leaf = (btree_node_phys_t *)new_bp->b_data;
 		leaf_type = (leaf_type & ~OBJECT_TYPE_MASK) |
 		    ((leaf_flags & BTNODE_ROOT) ? OBJ_BTREE : OBJ_BTREE_NODE);
-		apfs_obj_init(&new_leaf->btn_o, (oid_t)new_leaf_paddr, tx->tx_xid,
+		apfs_obj_init(&new_leaf->btn_o, leaf_oid, tx->tx_xid,
 		    leaf_type, leaf_subtype);
 		apfs_obj_set_cksum(amp, new_leaf);
 		error = apfs_bwrite(amp, new_leaf_paddr, new_bp);
@@ -2671,7 +2675,13 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			return error;
 		}
 
-		/* 3. Propagate up the path stack if internal nodes exist */
+		if ((tree_flags & BTREE_PHYSICAL) == 0 && omap_oid != 0 && *tree_oid != omap_oid) {
+			error = apfs_omap_update(tx, omap_oid, leaf_oid, new_leaf_paddr);
+			apfs_btree_free_entry_refs(all_entries, new_nkeys);
+			return error;
+		}
+
+		/* Physical tree: propagate up the path stack if internal nodes exist */
 		apfs_paddr_t child_paddr = new_leaf_paddr;
 		for (int d = (int)leaf_depth - 1; d >= 0; d--) {
 			apfs_paddr_t old_parent_paddr = path.bp_entries[d].pe_paddr;
@@ -2744,16 +2754,7 @@ apfs_btree_insert_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 			child_paddr = new_parent_paddr;
 		}
 
-		if (omap_oid != 0 && *tree_oid != omap_oid) {
-			error = apfs_omap_update(tx, omap_oid, *tree_oid, child_paddr);
-			if (error != 0) {
-				apfs_btree_free_entry_refs(all_entries, new_nkeys);
-				return error;
-			}
-		} else {
-			*tree_oid = (oid_t)child_paddr;
-		}
-
+		*tree_oid = (oid_t)child_paddr;
 		apfs_btree_free_entry_refs(all_entries, new_nkeys);
 		return 0;
 	}
@@ -3098,6 +3099,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 	memset(&path, 0, sizeof(path));
 	curr_paddr = root_paddr;
+	oid_t curr_oid = *tree_oid;
 
 	/* 1. Navigate from root to leaf, recording path */
 	while (curr_paddr != 0 && path.bp_depth < APFS_BTREE_MAX_DEPTH) {
@@ -3120,6 +3122,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		}
 
 		path.bp_entries[path.bp_depth].pe_paddr = curr_paddr;
+		path.bp_entries[path.bp_depth].pe_oid = curr_oid;
 		path.bp_entries[path.bp_depth].pe_flags = flags;
 
 		if (level == 0 || (flags & BTNODE_LEAF) != 0) {
@@ -3180,6 +3183,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		oid_t child_oid = le64toh(*(const oid_t *)v_ptr);
 		brelse(bp, 0);
 
+		curr_oid = child_oid;
 		error = apfs_btree_resolve_child(amp, omap_oid, tx, tx->tx_xid,
 		    tree_flags, child_oid, &curr_paddr);
 		if (error != 0)
@@ -3194,6 +3198,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 	/* 2. Remove from leaf node with Copy-on-Write */
 	uint32_t leaf_depth = path.bp_depth - 1;
 	apfs_paddr_t old_leaf_paddr = path.bp_entries[leaf_depth].pe_paddr;
+	oid_t leaf_oid = path.bp_entries[leaf_depth].pe_oid;
 	uint32_t del_idx = path.bp_entries[leaf_depth].pe_idx;
 
 	error = apfs_bread(amp, old_leaf_paddr, &bp);
@@ -3286,13 +3291,17 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 
 	leaf_type = (leaf_type & ~OBJECT_TYPE_MASK) |
 	    ((leaf_flags & BTNODE_ROOT) ? OBJ_BTREE : OBJ_BTREE_NODE);
-	apfs_obj_init(&new_leaf->btn_o, (oid_t)new_leaf_paddr, tx->tx_xid,
+	apfs_obj_init(&new_leaf->btn_o, leaf_oid, tx->tx_xid,
 	    leaf_type, leaf_subtype);
 	apfs_obj_set_cksum(amp, new_leaf);
 
 	error = apfs_bwrite(amp, new_leaf_paddr, new_bp);
 	if (error != 0)
 		return error;
+
+	if ((tree_flags & BTREE_PHYSICAL) == 0 && omap_oid != 0 && *tree_oid != omap_oid) {
+		return apfs_omap_update(tx, omap_oid, leaf_oid, new_leaf_paddr);
+	}
 
 	/* 3. Propagate up the path stack if internal nodes exist */
 	apfs_paddr_t child_paddr = new_leaf_paddr;
@@ -3361,15 +3370,7 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
 		child_paddr = new_parent_paddr;
 	}
 
-	/* 4. Update OMap or Root Tree pointer */
-	if (omap_oid != 0 && *tree_oid != omap_oid) {
-		error = apfs_omap_update(tx, omap_oid, *tree_oid, child_paddr);
-		if (error != 0)
-			return error;
-	} else {
-		*tree_oid = (oid_t)child_paddr;
-	}
-
+	*tree_oid = (oid_t)child_paddr;
 	return 0;
 }
 

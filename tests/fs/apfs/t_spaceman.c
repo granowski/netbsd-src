@@ -307,6 +307,7 @@ typedef struct btree_toc_fixed_entry {
 
 typedef struct apfs_btree_path_entry {
     apfs_paddr_t    pe_paddr;
+    oid_t           pe_oid;
     uint32_t        pe_idx;
     uint32_t        pe_flags;
 } apfs_btree_path_entry_t;
