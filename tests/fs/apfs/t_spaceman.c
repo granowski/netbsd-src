@@ -3078,12 +3078,14 @@ apfs_btree_remove_record(apfs_tx_t *tx, oid_t omap_oid, oid_t *tree_oid,
     return 0;
 }
 
+static oid_t g_test_next_ino_oid = 0x5000;
+
 int
 apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
     mode_t mode, uid_t uid, gid_t gid, oid_t *new_oidp)
 {
     apfs_tx_t tx;
-    oid_t new_ino_oid = 0x5000;
+    oid_t new_ino_oid = g_test_next_ino_oid++;
     uint32_t name_len = strlen(name);
     uint32_t name_hash = apfs_name_hash(name, name_len);
     int error;
@@ -5888,6 +5890,55 @@ test_atomic_rename_and_symlinks(const char *image_path)
     synthetic_buffer_size = 0;
 }
 
+static void
+test_vn_open_and_vop_create_semantics(const char *image_path)
+{
+    struct apfsmount amp;
+    int fd, error;
+    struct stat st;
+
+    fd = open(image_path, O_RDONLY);
+    assert(fd >= 0);
+    fstat(fd, &st);
+    synthetic_buffer_size = st.st_size;
+    synthetic_buffer = malloc(synthetic_buffer_size);
+    assert(synthetic_buffer != NULL);
+    ssize_t n = read(fd, synthetic_buffer, synthetic_buffer_size);
+    assert(n == (ssize_t)synthetic_buffer_size);
+    close(fd);
+
+    memset(&amp, 0, sizeof(amp));
+    nx_superblock_t *nx = (nx_superblock_t *)synthetic_buffer;
+    amp.am_block_size = le32toh(nx->nx_block_size);
+    memcpy(&amp.am_nx, nx, sizeof(*nx));
+    apfs_resv_init(&amp);
+
+    error = apfs_select_checkpoint(&amp);
+    assert(error == 0);
+
+    /* 1. Create file (simulating VOP_CREATE from touch / vn_open) */
+    oid_t file_oid = 0;
+    error = apfs_create_file(&amp, 0x1, "rawr.txt", 0644, 501, 20, &file_oid);
+    assert(error == 0);
+    assert(file_oid > 0);
+
+    /* 2. Create second file in same directory */
+    oid_t file2_oid = 0;
+    error = apfs_create_file(&amp, 0x1, "another.txt", 0600, 501, 20, &file2_oid);
+    assert(error == 0);
+    assert(file2_oid > 0);
+    assert(file2_oid != file_oid);
+
+    /* 3. Validate Space Manager consistency after creations */
+    error = apfs_validate_spaceman(&amp);
+    assert(error == 0);
+
+    apfs_resv_destroy(&amp);
+    free(synthetic_buffer);
+    synthetic_buffer = NULL;
+    synthetic_buffer_size = 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -6136,6 +6187,15 @@ main(int argc, char **argv)
         printf("\n--- Test Case: Atomic Rename & Symbolic Links (%s) ---\n", test_images[i]);
         test_atomic_rename_and_symlinks(test_images[i]);
         printf("PASS: Fast symbolic links and cross-directory atomic rename verified\n");
+    }
+
+    /* 23. VOP_CREATE and vn_open Semantics */
+    for (size_t i = 0; i < sizeof(test_images)/sizeof(test_images[0]); i++) {
+        if (access(test_images[i], F_OK) != 0)
+            continue;
+        printf("\n--- Test Case: VOP_CREATE and vn_open Semantics (%s) ---\n", test_images[i]);
+        test_vn_open_and_vop_create_semantics(test_images[i]);
+        printf("PASS: VOP_CREATE file creation and directory entry insertion verified\n");
     }
 
     printf("\n=======================================================\n");

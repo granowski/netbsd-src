@@ -268,6 +268,60 @@ ATF_TC_BODY(apfs_symlink_and_readlink, tc)
 	FSTEST_DESTRUCTOR(tc, apfs, args);
 }
 
+ATF_TC(apfs_touch_and_vop_create);
+ATF_TC_HEAD(apfs_touch_and_vop_create, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "Verify touch, vn_open, and VOP_CREATE file creation lifecycle");
+}
+ATF_TC_BODY(apfs_touch_and_vop_create, tc)
+{
+	void *args;
+	struct stat sb;
+	int fd, res;
+
+	FSTEST_CONSTRUCTOR(tc, apfs, args);
+
+	/* 1. Initial touch creation: open with O_WRONLY | O_CREAT | O_TRUNC */
+	fd = rump_sys_open(TEST_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	ATF_REQUIRE_MSG(fd != -1, "touch open failed: %d", errno);
+
+	res = rump_sys_fstat(fd, &sb);
+	ATF_REQUIRE_EQ(res, 0);
+	ATF_REQUIRE_EQ(sb.st_size, 0);
+	ATF_REQUIRE(S_ISREG(sb.st_mode));
+	rump_sys_close(fd);
+
+	/* 2. Re-touch existing file (O_CREAT without O_EXCL on existing vnode) */
+	fd = rump_sys_open(TEST_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	ATF_REQUIRE_MSG(fd != -1, "second touch failed: %d", errno);
+	rump_sys_close(fd);
+
+	/* 3. Exclusive create should fail with EEXIST */
+	fd = rump_sys_open(TEST_FILE, O_WRONLY | O_CREAT | O_EXCL, 0666);
+	ATF_REQUIRE_EQ(fd, -1);
+	ATF_REQUIRE_EQ(errno, EEXIST);
+
+	/* 4. Write data, then touch with O_TRUNC to verify size reset */
+	fd = rump_sys_open(TEST_FILE, O_WRONLY, 0);
+	ATF_REQUIRE(fd != -1);
+	ssize_t n = rump_sys_write(fd, "12345678", 8);
+	ATF_REQUIRE_EQ(n, 8);
+	rump_sys_close(fd);
+
+	fd = rump_sys_open(TEST_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	ATF_REQUIRE(fd != -1);
+	res = rump_sys_fstat(fd, &sb);
+	ATF_REQUIRE_EQ(res, 0);
+	ATF_REQUIRE_EQ(sb.st_size, 0);
+	rump_sys_close(fd);
+
+	/* 5. Clean up */
+	res = rump_sys_unlink(TEST_FILE);
+	ATF_REQUIRE_EQ(res, 0);
+
+	FSTEST_DESTRUCTOR(tc, apfs, args);
+}
+
 ATF_TC(apfs_read_only_rejection);
 ATF_TC_HEAD(apfs_read_only_rejection, tc)
 {
@@ -298,6 +352,7 @@ ATF_TC_BODY(apfs_read_only_rejection, tc)
 ATF_TP_ADD_TCS(tp)
 {
 	ATF_TP_ADD_TC(tp, apfs_open_write_read);
+	ATF_TP_ADD_TC(tp, apfs_touch_and_vop_create);
 	ATF_TP_ADD_TC(tp, apfs_append_and_seek_write);
 	ATF_TP_ADD_TC(tp, apfs_file_truncation);
 	ATF_TP_ADD_TC(tp, apfs_atomic_rename);

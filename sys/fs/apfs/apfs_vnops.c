@@ -326,7 +326,11 @@ apfs_vop_create(void *v)
 
 	ino_t ino = (ino_t)new_ino_oid;
 	error = vcache_get(dvp->v_mount, &ino, sizeof(ino), vpp);
-	return error;
+	if (error != 0)
+		return error;
+
+	VOP_UNLOCK(*vpp);
+	return 0;
 }
 
 int
@@ -755,7 +759,11 @@ apfs_vop_mkdir(void *v)
 
 	ino_t ino = (ino_t)new_ino_oid;
 	error = vcache_get(dvp->v_mount, &ino, sizeof(ino), vpp);
-	return error;
+	if (error != 0)
+		return error;
+
+	VOP_UNLOCK(*vpp);
+	return 0;
 }
 
 int
@@ -1110,31 +1118,26 @@ apfs_vop_symlink(void *v)
 	oid_t new_ino_oid;
 	int error;
 
-	if (dvp->v_mount->mnt_flag & MNT_RDONLY) {
-		vput(dvp);
+	if (dvp->v_mount->mnt_flag & MNT_RDONLY)
 		return EROFS;
-	}
 
-	if (cnp->cn_namelen > APFS_MODIFIED_NAMELEN) {
-		vput(dvp);
+	if (cnp->cn_namelen > APFS_MODIFIED_NAMELEN)
 		return ENAMETOOLONG;
-	}
 
 	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
 	name_buf[cnp->cn_namelen] = '\0';
 
 	error = apfs_create_symlink(amp, dnode->a_oid, name_buf, target,
 	    vap->va_uid, vap->va_gid, &new_ino_oid);
-	if (error != 0) {
-		vput(dvp);
+	if (error != 0)
 		return error;
-	}
 
 	if (vpp != NULL) {
 		error = VFS_VGET(dvp->v_mount, new_ino_oid, 0, vpp);
+		if (error == 0 && *vpp != NULL)
+			VOP_UNLOCK(*vpp);
 	}
 
-	vput(dvp);
 	return error;
 }
 
