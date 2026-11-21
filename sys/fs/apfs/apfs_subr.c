@@ -345,10 +345,11 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 				return false;
 			}
 			const obj_phys_t *obj = (const obj_phys_t *)mbp->b_data;
-			if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) != xid ||
+			if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) > xid ||
+			    le64toh(obj->o_xid) == 0 ||
 			    !apfs_checksum_valid(amp, obj)) {
 				printf("apfs_checkpoint: XID 0x%llx ephemeral block %llu "
-				    "invalid (oid 0x%llx xid 0x%llx type 0x%x, expected oid 0x%llx xid 0x%llx)\n",
+				    "invalid (oid 0x%llx xid 0x%llx type 0x%x, expected oid 0x%llx xid <= 0x%llx)\n",
 				    (unsigned long long)xid,
 				    (unsigned long long)mapping_paddr,
 				    (unsigned long long)le64toh(obj->o_oid),
@@ -1574,9 +1575,17 @@ apfs_omap_object_paddr(struct apfsmount *amp, apfs_tx_t *tx, oid_t omap_oid,
 	}
 
 	error = apfs_checkpoint_lookup(amp, omap_oid, 0, &paddr);
-	if (error == ENOENT)
-		paddr = (apfs_paddr_t)omap_oid;
-	else if (error != 0)
+	if (error == ENOENT) {
+		if (omap_oid != le64toh(amp->am_nx.nx_omap_oid) &&
+		    le64toh(amp->am_nx.nx_omap_oid) != 0) {
+			error = apfs_omap_lookup_internal(amp, tx,
+			    le64toh(amp->am_nx.nx_omap_oid), omap_oid, xid, &paddr);
+			if (error != 0)
+				paddr = (apfs_paddr_t)omap_oid;
+		} else {
+			paddr = (apfs_paddr_t)omap_oid;
+		}
+	} else if (error != 0)
 		return error;
 
 	if (paddr < 0 ||
@@ -1814,6 +1823,10 @@ apfs_btree_entry(struct apfsmount *amp, btree_node_phys_t *node,
 		key_len = le32toh(info->bt_key_size);
 		val_len = (flags & BTNODE_LEAF) ?
 		    le32toh(info->bt_val_size) : sizeof(oid_t);
+		if (key_off == 0xffff)
+			key_off = index * key_len;
+		if (val_off == 0xffff || val_off == 0)
+			val_off = (index + 1) * val_len;
 	} else {
 		const btree_toc_entry_t *toc;
 
@@ -3511,6 +3524,13 @@ apfs_omap_update(apfs_tx_t *tx, oid_t omap_oid, oid_t oid,
 		error = apfs_tx_add_mapping(tx, object_type, object_subtype,
 		    amp->am_block_size, 0, omap_oid, new_omap_paddr);
 	} else {
+		for (uint32_t i = 0; i < tx->tx_map_count; i++) {
+			if (le64toh(tx->tx_mappings[i].cpm_oid) == omap_oid) {
+				tx->tx_mappings[i].cpm_paddr =
+				    (apfs_paddr_t)htole64((uint64_t)new_omap_paddr);
+				break;
+			}
+		}
 		error = apfs_omap_update(tx,
 		    le64toh(amp->am_nx.nx_omap_oid), omap_oid,
 		    new_omap_paddr);
@@ -3554,6 +3574,36 @@ apfs_tx_begin(struct apfsmount *amp, apfs_tx_t *tx)
 	LIST_INIT(&tx->tx_resv.rt_entries);
 	tx->tx_map_count = 0;
 	tx->tx_free_count = 0;
+
+	/* Inherit all active checkpoint mappings from previous checkpoint map */
+	uint64_t desc_base = le64toh(amp->am_nx.nx_xp_desc_base);
+	uint32_t desc_index = le32toh(amp->am_nx.nx_xp_desc_index);
+	uint32_t desc_len = le32toh(amp->am_nx.nx_xp_desc_len);
+	uint32_t desc_blocks = amp->am_desc_blocks;
+	if (desc_blocks > 0 && desc_index < desc_blocks && desc_len <= desc_blocks) {
+		uint32_t capacity = (amp->am_block_size - sizeof(checkpoint_map_phys_t)) /
+		    sizeof(checkpoint_mapping_t);
+		for (uint32_t i = 0; i < desc_len; i++) {
+			uint32_t index = ((uint64_t)desc_index + i) % desc_blocks;
+			struct buf *bp = NULL;
+			int error = apfs_bread(amp, (apfs_paddr_t)(desc_base + index), &bp);
+			if (error != 0)
+				continue;
+			checkpoint_map_phys_t *map = (checkpoint_map_phys_t *)bp->b_data;
+			if ((le32toh(map->cpm_o.o_type) & OBJECT_TYPE_MASK) == OBJ_CHECKPOINT_MAP &&
+			    apfs_checksum_valid(amp, map)) {
+				uint32_t count = le32toh(map->cpm_count);
+				if (count <= capacity) {
+					for (uint32_t j = 0; j < count; j++) {
+						if (tx->tx_map_count < APFS_TX_MAX_MAPPINGS) {
+							tx->tx_mappings[tx->tx_map_count++] = map->cpm_map[j];
+						}
+					}
+				}
+			}
+			brelse(bp, 0);
+		}
+	}
 
 	return 0;
 }

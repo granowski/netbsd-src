@@ -260,13 +260,14 @@ typedef struct checkpoint_map_phys {
 #define APFS_TYPE_DIR_REC     6
 #define APFS_TYPE_DIR_STATS   7
 
-#define OBJ_ID_MASK           0x0ffffffffffffffULL
+#define OBJ_ID_MASK           0x0fffffffffffffffULL
 #define OBJ_TYPE_SHIFT        60
 #define OBJ_TYPE_MASK         0xf000000000000000ULL
 
 #define DREC_HASH_SHIFT       10
 #define DREC_NLEN_MASK        0x03ff
 #define J_EXT_LEN_MASK        0x00ffffffffffffffULL
+#define APFS_KEY(id, type) (((uint64_t)(type) << OBJ_TYPE_SHIFT) | ((id) & OBJ_ID_MASK))
 
 typedef struct btree_node_phys {
     obj_phys_t btn_o;
@@ -277,7 +278,9 @@ typedef struct btree_node_phys {
     uint16_t   btn_table_space_len;
     uint16_t   btn_free_space_off;
     uint16_t   btn_free_space_len;
+    uint16_t   btn_key_free_list_off;
     uint16_t   btn_key_free_list_len;
+    uint16_t   btn_val_free_list_off;
     uint16_t   btn_val_free_list_len;
     uint8_t    btn_data[0];
 } __attribute__((packed)) btree_node_phys_t;
@@ -825,7 +828,8 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp,
                 return false;
             }
             const obj_phys_t *obj = (const obj_phys_t *)mbp->b_data;
-            if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) != xid ||
+            if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) > xid ||
+                le64toh(obj->o_xid) == 0 ||
                 !apfs_checksum_valid(amp, obj)) {
                 brelse(mbp, 0);
                 brelse(bp, 0);
@@ -971,7 +975,7 @@ apfs_checkpoint_lookup(struct apfsmount *amp, oid_t oid, oid_t fs_oid, apfs_padd
         for (uint32_t j = 0; j < count; j++) {
             checkpoint_mapping_t *entry = &map->cpm_map[j];
             if (le64toh(entry->cpm_oid) == oid &&
-                le64toh(entry->cpm_fs_oid) == fs_oid) {
+                (fs_oid == 0 || le64toh(entry->cpm_fs_oid) == fs_oid)) {
                 *paddrp = (apfs_paddr_t)le64toh((uint64_t)entry->cpm_paddr);
                 brelse(bp, 0);
                 return 0;
@@ -1515,6 +1519,36 @@ apfs_tx_begin(struct apfsmount *amp, apfs_tx_t *tx)
     LIST_INIT(&tx->tx_resv.rt_entries);
     tx->tx_map_count = 0;
     tx->tx_free_count = 0;
+
+    /* Inherit all active checkpoint mappings from previous checkpoint map */
+    uint64_t desc_base = le64toh(amp->am_nx.nx_xp_desc_base);
+    uint32_t desc_index = le32toh(amp->am_nx.nx_xp_desc_index);
+    uint32_t desc_len = le32toh(amp->am_nx.nx_xp_desc_len);
+    uint32_t desc_blocks = amp->am_desc_blocks;
+    if (desc_blocks > 0 && desc_index < desc_blocks && desc_len <= desc_blocks) {
+        uint32_t capacity = (amp->am_block_size - sizeof(checkpoint_map_phys_t)) /
+            sizeof(checkpoint_mapping_t);
+        for (uint32_t i = 0; i < desc_len; i++) {
+            uint32_t index = ((uint64_t)desc_index + i) % desc_blocks;
+            struct buf *bp = NULL;
+            int error = apfs_bread(amp, (apfs_paddr_t)(desc_base + index), &bp);
+            if (error != 0)
+                continue;
+            checkpoint_map_phys_t *map = (checkpoint_map_phys_t *)bp->b_data;
+            if ((le32toh(map->cpm_o.o_type) & OBJECT_TYPE_MASK) == OBJ_CHECKPOINT_MAP &&
+                apfs_checksum_valid(amp, map)) {
+                uint32_t count = le32toh(map->cpm_count);
+                if (count <= capacity) {
+                    for (uint32_t j = 0; j < count; j++) {
+                        if (tx->tx_map_count < APFS_TX_MAX_MAPPINGS) {
+                            tx->tx_mappings[tx->tx_map_count++] = map->cpm_map[j];
+                        }
+                    }
+                }
+            }
+            brelse(bp, 0);
+        }
+    }
 
     return 0;
 }
@@ -2215,6 +2249,10 @@ apfs_btree_entry(struct apfsmount *amp, btree_node_phys_t *node,
         key_len = le32toh(info->bt_key_size);
         val_len = (flags & BTNODE_LEAF) ?
             le32toh(info->bt_val_size) : sizeof(oid_t);
+        if (key_off == 0xffff)
+            key_off = index * key_len;
+        if (val_off == 0xffff || val_off == 0)
+            val_off = (index + 1) * val_len;
     } else {
         const btree_toc_entry_t *toc;
         toc_size = sizeof(*toc);
@@ -2265,6 +2303,10 @@ apfs_btree_find(struct apfsmount *amp, apfs_tx_t *tx, oid_t omap_oid, oid_t tree
             return error;
     }
 
+    uint32_t tree_flags = 0;
+    btree_info_t root_info;
+    memset(&root_info, 0, sizeof(root_info));
+
     while (curr_paddr != 0) {
         int error = apfs_bread(amp, curr_paddr, &bp);
         if (error != 0)
@@ -2275,13 +2317,20 @@ apfs_btree_find(struct apfsmount *amp, apfs_tx_t *tx, oid_t omap_oid, oid_t tree
         uint16_t level = le16toh(node->btn_level);
         uint32_t nkeys = le32toh(node->btn_nkeys);
         btree_info_t info;
-        uint32_t tree_flags = 0;
         if (flags & BTNODE_ROOT) {
             memcpy(&info, (char *)node + amp->am_block_size - sizeof(info), sizeof(info));
             tree_flags = le32toh(info.bt_flags);
+            root_info = info;
+        } else {
+            info = root_info;
         }
 
         if (level == 0 || (flags & BTNODE_LEAF)) {
+            int best_match = -1;
+            uint64_t best_xid = 0;
+            const void *best_v = NULL;
+            size_t best_v_len = 0;
+
             for (uint32_t i = 0; i < nkeys; i++) {
                 const void *k_ptr, *v_ptr;
                 size_t k_len, v_len;
@@ -2290,18 +2339,46 @@ apfs_btree_find(struct apfsmount *amp, apfs_tx_t *tx, oid_t omap_oid, oid_t tree
                     brelse(bp, 0);
                     return error;
                 }
-                uint32_t subtype = (tree_flags & BTREE_HASHED) ? APFS_TYPE_ANY :
-                    ((flags & BTNODE_FIXED_KV_SIZE) ? ((tree_flags & BTREE_PHYSICAL) ? OBJ_OMAP : 0xFEFE) : APFS_TYPE_ANY);
-                if (apfs_btree_cmp(key, k_ptr, subtype) == 0) {
-                    if (val_buf && val_buf_len > 0) {
-                        size_t to_copy = (val_buf_len < v_len) ? val_buf_len : v_len;
-                        memcpy(val_buf, v_ptr, to_copy);
+                uint32_t subtype = (flags & BTNODE_FIXED_KV_SIZE) ? OBJ_OMAP :
+                    ((tree_flags & BTREE_HASHED) ? APFS_TYPE_ANY : APFS_TYPE_ANY);
+                if (subtype == OBJ_OMAP) {
+                    const omap_key_t *target_ok = key;
+                    const omap_key_t *curr_ok = k_ptr;
+                    uint64_t t_oid = le64toh(target_ok->ok_oid);
+                    uint64_t c_oid = le64toh(curr_ok->ok_oid);
+                    uint64_t t_xid = le64toh(target_ok->ok_xid);
+                    uint64_t c_xid = le64toh(curr_ok->ok_xid);
+                    if (c_oid == t_oid && c_xid <= t_xid) {
+                        if (best_match < 0 || c_xid > best_xid) {
+                            best_match = (int)i;
+                            best_xid = c_xid;
+                            best_v = v_ptr;
+                            best_v_len = v_len;
+                        }
                     }
-                    if (out_val_len)
-                        *out_val_len = v_len;
-                    brelse(bp, 0);
-                    return 0;
+                } else {
+                    int cmp = apfs_btree_cmp(key, k_ptr, subtype);
+                    if (cmp == 0) {
+                        if (val_buf && val_buf_len > 0) {
+                            size_t to_copy = (val_buf_len < v_len) ? val_buf_len : v_len;
+                            memcpy(val_buf, v_ptr, to_copy);
+                        }
+                        if (out_val_len)
+                            *out_val_len = v_len;
+                        brelse(bp, 0);
+                        return 0;
+                    }
                 }
+            }
+            if (best_match >= 0) {
+                if (val_buf && val_buf_len > 0) {
+                    size_t to_copy = (val_buf_len < best_v_len) ? val_buf_len : best_v_len;
+                    memcpy(val_buf, best_v, to_copy);
+                }
+                if (out_val_len)
+                    *out_val_len = best_v_len;
+                brelse(bp, 0);
+                return 0;
             }
             brelse(bp, 0);
             return ENOENT;
@@ -2341,6 +2418,9 @@ apfs_btree_find(struct apfsmount *amp, apfs_tx_t *tx, oid_t omap_oid, oid_t tree
     return ENOENT;
 }
 
+static int apfs_omap_lookup_internal(struct apfsmount *amp, apfs_tx_t *tx,
+    oid_t omap_oid, oid_t oid, xid_t xid, apfs_paddr_t *paddrp);
+
 static int
 apfs_omap_object_paddr(struct apfsmount *amp, apfs_tx_t *tx,
     oid_t omap_oid, xid_t xid, apfs_paddr_t *paddrp)
@@ -2364,10 +2444,18 @@ apfs_omap_object_paddr(struct apfsmount *amp, apfs_tx_t *tx,
     }
 
     apfs_paddr_t paddr;
-    int error = apfs_checkpoint_lookup(amp, omap_oid, xid, &paddr);
-    if (error == ENOENT)
-        paddr = (apfs_paddr_t)omap_oid;
-    else if (error != 0)
+    int error = apfs_checkpoint_lookup(amp, omap_oid, 0, &paddr);
+    if (error == ENOENT) {
+        if (omap_oid != le64toh(amp->am_nx.nx_omap_oid) &&
+            le64toh(amp->am_nx.nx_omap_oid) != 0) {
+            error = apfs_omap_lookup_internal(amp, tx,
+                le64toh(amp->am_nx.nx_omap_oid), omap_oid, xid, &paddr);
+            if (error != 0)
+                paddr = (apfs_paddr_t)omap_oid;
+        } else {
+            paddr = (apfs_paddr_t)omap_oid;
+        }
+    } else if (error != 0)
         return error;
 
     *paddrp = paddr;
@@ -2409,15 +2497,14 @@ apfs_omap_lookup_internal(struct apfsmount *amp, apfs_tx_t *tx,
     key.ok_oid = htole64(oid);
     key.ok_xid = htole64(xid);
     error = apfs_btree_find(amp, tx, 0, tree_oid, &key, sizeof(key), &val, sizeof(val), NULL);
-    if (error == 0) {
-        uint32_t flags = le32toh(val.ov_flags);
-        uint64_t paddr = le64toh((uint64_t)val.ov_paddr);
-        if (flags & OMAP_VAL_DELETED)
-            return ENOENT;
-        *paddrp = (apfs_paddr_t)paddr;
-        return 0;
-    }
-    return error;
+    if (error != 0)
+        return error;
+    uint32_t flags = le32toh(val.ov_flags);
+    uint64_t paddr = le64toh((uint64_t)val.ov_paddr);
+    if (flags & OMAP_VAL_DELETED)
+        return ENOENT;
+    *paddrp = (apfs_paddr_t)paddr;
+    return 0;
 }
 
 static int
@@ -3460,7 +3547,14 @@ apfs_omap_update(apfs_tx_t *tx, oid_t omap_oid, oid_t oid, apfs_paddr_t paddr)
     if (omap_oid == le64toh(amp->am_nx.nx_omap_oid)) {
         error = apfs_tx_add_mapping(tx, object_type, object_subtype,
             amp->am_block_size, 0, omap_oid, new_omap_paddr);
-    } else if (le64toh(amp->am_nx.nx_omap_oid) != 0 && omap_oid != le64toh(amp->am_nx.nx_omap_oid)) {
+    } else {
+        for (uint32_t i = 0; i < tx->tx_map_count; i++) {
+            if (le64toh(tx->tx_mappings[i].cpm_oid) == omap_oid) {
+                tx->tx_mappings[i].cpm_paddr =
+                    (apfs_paddr_t)htole64((uint64_t)new_omap_paddr);
+                break;
+            }
+        }
         error = apfs_omap_update(tx, le64toh(amp->am_nx.nx_omap_oid), omap_oid, new_omap_paddr);
     }
 
@@ -3498,42 +3592,10 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
     ino_val.group = htole32(gid);
     ino_val.mode = htole16(mode | S_IFREG);
 
-    oid_t root_tree_oid = 0;
-    /* Create a standalone btree node if tree_oid is 0 */
-    apfs_paddr_t tree_root_paddr;
-    error = apfs_tx_alloc_block(&tx, 1, &tree_root_paddr);
-    if (error != 0) {
-        apfs_tx_abort(&tx);
-        return error;
-    }
-    struct buf *root_bp;
-    error = apfs_getblk(amp, tree_root_paddr, &root_bp);
-    if (error != 0) {
-        apfs_tx_abort(&tx);
-        return error;
-    }
-    btree_node_phys_t *rnode = (btree_node_phys_t *)root_bp->b_data;
-    memset(rnode, 0, amp->am_block_size);
-    rnode->btn_flags = htole16(BTNODE_ROOT | BTNODE_LEAF);
-    rnode->btn_level = 0;
-    rnode->btn_nkeys = 0;
-    rnode->btn_table_space_off = 0;
-    rnode->btn_table_space_len = 0;
+    oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
+    oid_t omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
 
-    btree_info_t *rinfo = (btree_info_t *)((char *)rnode + amp->am_block_size - sizeof(btree_info_t));
-    rinfo->bt_flags = htole32(BTREE_PHYSICAL);
-    rinfo->bt_node_size = htole32(amp->am_block_size);
-    apfs_obj_init(&rnode->btn_o, (oid_t)tree_root_paddr, tx.tx_xid,
-        OBJ_BTREE_NODE | OBJ_PHYSICAL, 0);
-    apfs_obj_set_cksum(amp, rnode);
-    error = apfs_bwrite(amp, tree_root_paddr, root_bp);
-    if (error != 0) {
-        apfs_tx_abort(&tx);
-        return error;
-    }
-    root_tree_oid = tree_root_paddr;
-
-    error = apfs_btree_insert_record(&tx, 0, &root_tree_oid,
+    error = apfs_btree_insert_record(&tx, omap_oid, &root_tree_oid,
         &ino_key, sizeof(ino_key), &ino_val, sizeof(ino_val));
     if (error != 0) {
         apfs_tx_abort(&tx);
@@ -3553,7 +3615,7 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
     drec_val.file_id = htole64(new_ino_oid);
     drec_val.flags = htole16(0x1);
 
-    error = apfs_btree_insert_record(&tx, 0, &root_tree_oid,
+    error = apfs_btree_insert_record(&tx, omap_oid, &root_tree_oid,
         drec_key, drec_key_size, &drec_val, sizeof(drec_val));
     free(drec_key);
     if (error != 0) {
@@ -3561,13 +3623,13 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
         return error;
     }
 
+    amp->am_sb.apfs_root_tree_oid = htole64(root_tree_oid);
     error = apfs_tx_commit(&tx);
     if (error != 0)
         return error;
 
     if (new_oidp != NULL)
         *new_oidp = new_ino_oid;
-
     return 0;
 }
 
@@ -4806,7 +4868,6 @@ test_tx_lifecycle_and_cow_alloc(const char *image_path)
     assert(error == 0);
     assert(tx.tx_xid == amp.am_checkpoint_xid + 1);
     assert(tx.tx_state == APFS_TX_STATE_ACTIVE);
-    assert(tx.tx_map_count == 0);
 
     /* 2. Allocate candidate block */
     error = apfs_tx_alloc_block(&tx, 1, &paddr);
@@ -5258,6 +5319,28 @@ test_file_creation_and_extent_writes(const char *image_path)
     error = apfs_select_checkpoint(&amp);
     assert(error == 0);
 
+    /* Locate and load volume superblock */
+    uint32_t max_fs = le32toh(amp.am_nx.nx_max_file_systems);
+    if (max_fs > 100)
+        max_fs = 100;
+    for (uint32_t i = 0; i < max_fs; i++) {
+        oid_t fs_oid = le64toh(amp.am_nx.nx_fs_oid[i]);
+        if (fs_oid == 0)
+            continue;
+        apfs_paddr_t paddr;
+        error = apfs_omap_lookup_internal(&amp, NULL,
+            le64toh(amp.am_nx.nx_omap_oid), fs_oid, amp.am_checkpoint_xid, &paddr);
+        if (error == 0) {
+            struct buf *bp;
+            error = apfs_bread(&amp, paddr, &bp);
+            if (error == 0) {
+                memcpy(&amp.am_sb, bp->b_data, sizeof(amp.am_sb));
+                brelse(bp, 0);
+                break;
+            }
+        }
+    }
+
     /* Create file */
     error = apfs_create_file(&amp, 0x1, "testfile.dat", 0644, 501, 20, &new_file_oid);
     assert(error == 0);
@@ -5393,6 +5476,32 @@ test_btree_removal_and_lifecycle(const char *image_path)
     synthetic_buffer_size = 0;
 }
 
+static int
+load_volume_sb(struct apfsmount *amp)
+{
+    uint32_t max_fs = le32toh(amp->am_nx.nx_max_file_systems);
+    if (max_fs > 100)
+        max_fs = 100;
+    for (uint32_t i = 0; i < max_fs; i++) {
+        oid_t fs_oid = le64toh(amp->am_nx.nx_fs_oid[i]);
+        if (fs_oid == 0)
+            continue;
+        apfs_paddr_t paddr;
+        int error = apfs_omap_lookup_internal(amp, NULL,
+            le64toh(amp->am_nx.nx_omap_oid), fs_oid, amp->am_checkpoint_xid, &paddr);
+        if (error == 0) {
+            struct buf *bp;
+            error = apfs_bread(amp, paddr, &bp);
+            if (error == 0) {
+                memcpy(&amp->am_sb, bp->b_data, sizeof(amp->am_sb));
+                brelse(bp, 0);
+                return 0;
+            }
+        }
+    }
+    return ENOENT;
+}
+
 static void
 test_directory_and_unlink_lifecycle(const char *image_path)
 {
@@ -5420,6 +5529,7 @@ test_directory_and_unlink_lifecycle(const char *image_path)
 
     error = apfs_select_checkpoint(&amp);
     assert(error == 0);
+    load_volume_sb(&amp);
 
     /* 1. Create Directory */
     error = apfs_create_dir(&amp, 0x1, "subfolder", 0755, 501, 20, &dir_oid);
@@ -5551,6 +5661,7 @@ test_durability_stress_and_crash_recovery(const char *image_path)
 
     error = apfs_select_checkpoint(&amp);
     assert(error == 0);
+    load_volume_sb(&amp);
 
     /* 100-cycle mutation & crash injection stress loop */
     for (int cycle = 0; cycle < 100; cycle++) {
@@ -6163,6 +6274,7 @@ test_atomic_rename_and_symlinks(const char *image_path)
 
     error = apfs_select_checkpoint(&amp);
     assert(error == 0);
+    load_volume_sb(&amp);
 
     /* 1. Create a sub-directory and files */
     oid_t dir_oid = 0;
@@ -6223,24 +6335,79 @@ test_vn_open_and_vop_create_semantics(const char *image_path)
     memset(&amp, 0, sizeof(amp));
     nx_superblock_t *nx = (nx_superblock_t *)synthetic_buffer;
     amp.am_block_size = le32toh(nx->nx_block_size);
+    amp.am_desc_blocks = le32toh(nx->nx_xp_desc_blocks);
     memcpy(&amp.am_nx, nx, sizeof(*nx));
     apfs_resv_init(&amp);
 
     error = apfs_select_checkpoint(&amp);
     assert(error == 0);
 
+    /* Locate and load volume superblock */
+    uint32_t max_fs = le32toh(amp.am_nx.nx_max_file_systems);
+    if (max_fs > 100)
+        max_fs = 100;
+    bool found_sb = false;
+    for (uint32_t i = 0; i < max_fs; i++) {
+        oid_t fs_oid = le64toh(amp.am_nx.nx_fs_oid[i]);
+        if (fs_oid == 0)
+            continue;
+        apfs_paddr_t paddr;
+        error = apfs_omap_lookup_internal(&amp, NULL,
+            le64toh(amp.am_nx.nx_omap_oid), fs_oid, amp.am_checkpoint_xid, &paddr);
+        printf("fs_oid=0x%llx, nx_omap=0x%llx, xid=0x%llx -> err=%d, paddr=%lld\n",
+            (unsigned long long)fs_oid, (unsigned long long)le64toh(amp.am_nx.nx_omap_oid),
+            (unsigned long long)amp.am_checkpoint_xid, error, (long long)paddr);
+        if (error == 0) {
+            struct buf *bp;
+            error = apfs_bread(&amp, paddr, &bp);
+            if (error == 0) {
+                memcpy(&amp.am_sb, bp->b_data, sizeof(amp.am_sb));
+                brelse(bp, 0);
+                found_sb = true;
+                break;
+            }
+        }
+    }
+    assert(found_sb);
+
     /* 1. Create file (simulating VOP_CREATE from touch / vn_open) */
+    oid_t parent_dir_oid = 0x2;
     oid_t file_oid = 0;
-    error = apfs_create_file(&amp, 0x1, "rawr.txt", 0644, 501, 20, &file_oid);
+    error = apfs_create_file(&amp, parent_dir_oid, "rawr.txt", 0644, 501, 20, &file_oid);
     assert(error == 0);
     assert(file_oid > 0);
 
+    /* Verify inode can be read back simulating apfs_loadvnode */
+    j_key_t ikey;
+    ikey.obj_id_and_type = htole64(APFS_KEY(file_oid, APFS_TYPE_INODE));
+    uint8_t *val_buf = malloc(amp.am_block_size);
+    size_t val_len = 0;
+    error = apfs_btree_find(&amp, NULL,
+        le64toh(amp.am_sb.apfs_omap_oid),
+        le64toh(amp.am_sb.apfs_root_tree_oid), &ikey, sizeof(ikey),
+        val_buf, amp.am_block_size, &val_len);
+    assert(error == 0);
+    assert(val_len >= sizeof(j_inode_val_t));
+    free(val_buf);
+
     /* 2. Create second file in same directory */
     oid_t file2_oid = 0;
-    error = apfs_create_file(&amp, 0x1, "another.txt", 0600, 501, 20, &file2_oid);
+    error = apfs_create_file(&amp, parent_dir_oid, "another.txt", 0600, 501, 20, &file2_oid);
     assert(error == 0);
     assert(file2_oid > 0);
     assert(file2_oid != file_oid);
+
+    /* Verify second inode can be read back */
+    ikey.obj_id_and_type = htole64(APFS_KEY(file2_oid, APFS_TYPE_INODE));
+    val_buf = malloc(amp.am_block_size);
+    val_len = 0;
+    error = apfs_btree_find(&amp, NULL,
+        le64toh(amp.am_sb.apfs_omap_oid),
+        le64toh(amp.am_sb.apfs_root_tree_oid), &ikey, sizeof(ikey),
+        val_buf, amp.am_block_size, &val_len);
+    assert(error == 0);
+    assert(val_len >= sizeof(j_inode_val_t));
+    free(val_buf);
 
     /* 3. Validate Space Manager consistency after creations */
     error = apfs_validate_spaceman(&amp);
@@ -6528,6 +6695,10 @@ main(int argc, char **argv)
         }
 
         printf("PASS: Space Manager successfully validated on %s\n", argv[1]);
+
+        printf("=== Testing File Creation on %s ===\n", argv[1]);
+        test_vn_open_and_vop_create_semantics(argv[1]);
+        printf("PASS: File Creation successfully validated on %s\n", argv[1]);
         return 0;
     }
 
