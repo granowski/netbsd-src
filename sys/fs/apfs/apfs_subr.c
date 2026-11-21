@@ -3700,7 +3700,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 {
 	struct apfsmount *amp;
 	struct buf *smbp = NULL, *cibbp = NULL, *bmbp = NULL, *bp = NULL;
-	spaceman_phys_t *sm, *new_sm = NULL;
+	spaceman_phys_t *sm, *sm_copy = NULL, *new_sm = NULL;
 	apfs_paddr_t sm_paddr, new_sm_paddr;
 	uint32_t blocks_per_chunk, chunks_per_cib, cib_count, addr_offset;
 	int error = 0;
@@ -3734,6 +3734,13 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 		brelse(smbp, 0);
 		return EINVAL;
 	}
+
+	/* Allocation rereads the Space Manager block through the buffer cache. */
+	sm_copy = kmem_alloc(amp->am_block_size, KM_SLEEP);
+	memcpy(sm_copy, smbp->b_data, amp->am_block_size);
+	brelse(smbp, 0);
+	smbp = NULL;
+	sm = sm_copy;
 
 	struct chunk_mod {
 		uint64_t     cm_chunk_idx;
@@ -3805,6 +3812,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 						error = apfs_bread(amp, chunks[c_idx].cm_old_bm, &bmbp);
 						if (error != 0) {
 							brelse(cibbp, 0);
+							cibbp = NULL;
 							goto out;
 						}
 						memcpy(chunks[c_idx].cm_bitmap, bmbp->b_data, amp->am_block_size);
@@ -3821,6 +3829,7 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 					if (cb_idx == -1) {
 						if (num_cibs >= APFS_TX_UPDATE_MAX_CIBS) {
 							brelse(cibbp, 0);
+							cibbp = NULL;
 							error = ENOSPC;
 							goto out;
 						}
@@ -3829,15 +3838,19 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 						cibs[cb_idx].cibm_old_paddr = old_cib_paddr;
 						cibs[cb_idx].cibm_data = (chunk_info_block_phys_t *)kmem_alloc(amp->am_block_size, KM_SLEEP);
 						memcpy(cibs[cb_idx].cibm_data, cibbp->b_data, amp->am_block_size);
+						/* Allocation also rereads this CIB. */
+						brelse(cibbp, 0);
+						cibbp = NULL;
 
 						error = apfs_tx_alloc_block(tx, 1, &cibs[cb_idx].cibm_new_paddr);
-						if (error != 0) {
-							brelse(cibbp, 0);
+						if (error != 0)
 							goto out;
-						}
 						new_allocs = true;
 					}
-					brelse(cibbp, 0);
+					if (cibbp != NULL) {
+						brelse(cibbp, 0);
+						cibbp = NULL;
+					}
 
 					error = apfs_tx_alloc_block(tx, 1, &chunks[c_idx].cm_new_bm);
 					if (error != 0)
@@ -3917,15 +3930,18 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 						cibs[cb_idx].cibm_old_paddr = old_cib_paddr;
 						cibs[cb_idx].cibm_data = (chunk_info_block_phys_t *)kmem_alloc(amp->am_block_size, KM_SLEEP);
 						memcpy(cibs[cb_idx].cibm_data, cibbp->b_data, amp->am_block_size);
+						brelse(cibbp, 0);
+						cibbp = NULL;
 
 						error = apfs_tx_alloc_block(tx, 1, &cibs[cb_idx].cibm_new_paddr);
-						if (error != 0) {
-							brelse(cibbp, 0);
+						if (error != 0)
 							goto out;
-						}
 						new_allocs = true;
 					}
-					brelse(cibbp, 0);
+					if (cibbp != NULL) {
+						brelse(cibbp, 0);
+						cibbp = NULL;
+					}
 
 					error = apfs_tx_alloc_block(tx, 1, &chunks[c_idx].cm_new_bm);
 					if (error != 0)
@@ -4049,8 +4065,12 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 	    amp->am_block_size, 0, le64toh(amp->am_nx.nx_spaceman_oid), new_sm_paddr);
 
 out:
+	if (cibbp != NULL)
+		brelse(cibbp, 0);
 	if (smbp != NULL)
 		brelse(smbp, 0);
+	if (sm_copy != NULL)
+		kmem_free(sm_copy, amp->am_block_size);
 	if (new_sm != NULL)
 		kmem_free(new_sm, amp->am_block_size);
 	if (chunks != NULL) {
