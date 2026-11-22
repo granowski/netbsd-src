@@ -1002,7 +1002,11 @@ apfs_vop_readdir(void *v)
 	    le64toh(apnode->a_amp->am_sb.apfs_root_tree_oid), &start_key,
 	    sizeof(start_key), apfs_readdir_cb, &ctx);
 
-	if (error == EJUSTRETURN) error = 0;
+	if (error == EJUSTRETURN) {
+		error = 0;
+	} else if (error == 0 && ap->a_eofflag != NULL) {
+		*ap->a_eofflag = 1;
+	}
 	printf("apfs_readdir: dir 0x%llx done error %d emitted %d "
 	    "offset %lld resid %zu\n", (unsigned long long)apnode->a_oid,
 	    error, ctx.count, (long long)uio->uio_offset, uio->uio_resid);

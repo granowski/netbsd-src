@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 
 #include <atf-c.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -238,6 +239,38 @@ ATF_TC_BODY(apfs_directory_and_unlink, tc)
 	FSTEST_DESTRUCTOR(tc, apfs, args);
 }
 
+ATF_TC(apfs_readdir_eof);
+ATF_TC_HEAD(apfs_readdir_eof, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Verify directory iteration reports EOF after the final entry");
+}
+ATF_TC_BODY(apfs_readdir_eof, tc)
+{
+	void *args;
+	char buf[512];
+	ssize_t n;
+	int fd, res;
+
+	FSTEST_CONSTRUCTOR(tc, apfs, args);
+
+	res = rump_sys_mkdir(TEST_DIR, 0755);
+	ATF_REQUIRE_EQ(res, 0);
+	fd = rump_sys_open(TEST_DIR, O_RDONLY, 0);
+	ATF_REQUIRE_MSG(fd != -1, "directory open failed: %d", errno);
+
+	n = rump_sys_getdents(fd, buf, sizeof(buf));
+	ATF_REQUIRE_MSG(n > 0, "getdents did not return dot entries: %zd", n);
+	n = rump_sys_getdents(fd, buf, sizeof(buf));
+	ATF_REQUIRE_MSG(n == 0, "getdents did not stop at EOF: %zd", n);
+
+	rump_sys_close(fd);
+	res = rump_sys_rmdir(TEST_DIR);
+	ATF_REQUIRE_EQ(res, 0);
+
+	FSTEST_DESTRUCTOR(tc, apfs, args);
+}
+
 ATF_TC(apfs_symlink_and_readlink);
 ATF_TC_HEAD(apfs_symlink_and_readlink, tc)
 {
@@ -357,6 +390,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, apfs_file_truncation);
 	ATF_TP_ADD_TC(tp, apfs_atomic_rename);
 	ATF_TP_ADD_TC(tp, apfs_directory_and_unlink);
+	ATF_TP_ADD_TC(tp, apfs_readdir_eof);
 	ATF_TP_ADD_TC(tp, apfs_symlink_and_readlink);
 	ATF_TP_ADD_TC(tp, apfs_read_only_rejection);
 
