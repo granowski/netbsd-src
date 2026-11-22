@@ -337,7 +337,6 @@ apfs_vop_create(void *v)
 		return error;
 	}
 
-	VOP_UNLOCK(*vpp);
 	APFS_TRACE("vop_create complete inode=0x%llx\n",
 	    (unsigned long long)ino);
 	return 0;
@@ -785,7 +784,6 @@ apfs_vop_mkdir(void *v)
 	if (error != 0)
 		return error;
 
-	VOP_UNLOCK(*vpp);
 	return 0;
 }
 

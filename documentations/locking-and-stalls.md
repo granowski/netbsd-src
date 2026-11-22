@@ -51,6 +51,14 @@ console output on a serial console or another persistent console if possible;
 SSH may be unavailable when the kernel is stuck. The last message identifies
 the boundary not crossed:
 
+The vnode lock contract is separate from transaction locking: `vcache_get()`
+returns a referenced but unlocked vnode, and successful `VOP_CREATE` and
+`VOP_MKDIR` operations must return that vnode unlocked. Calling `VOP_UNLOCK()`
+on the result without first acquiring its vnode lock triggers a lockdebug
+assertion in `rw_vector_exit` (`RW_COUNT(rw) != 0`). This is a panic, not a
+transaction deadlock; the APFS metadata transaction may already have committed
+before the vnode is retrieved.
+
 | Last trace | Likely wait/stop boundary |
 |---|---|
 | `tx_begin wait am_lock` | Acquiring the transaction mutex; look for the current lock owner and its transaction's last trace. |
