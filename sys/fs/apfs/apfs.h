@@ -10,6 +10,16 @@
 #include <sys/queue.h>
 #include <miscfs/genfs/genfs_node.h>
 
+#ifndef APFS_DEBUG
+#define APFS_DEBUG 1
+#endif
+
+#if APFS_DEBUG
+#define APFS_TRACE(...)	printf("apfs_trace: " __VA_ARGS__)
+#else
+#define APFS_TRACE(...)	do { } while (0)
+#endif
+
 /* APFS Primitive Types */
 typedef int64_t  apfs_paddr_t;
 typedef uint64_t oid_t;

@@ -6316,27 +6316,41 @@ test_atomic_rename_and_symlinks(const char *image_path)
 }
 
 static void
-test_vn_open_and_vop_create_semantics(const char *image_path)
+test_vn_open_and_vop_create_semantics(const char *image_path,
+    bool write_image)
 {
     struct apfsmount amp;
+    struct buf *bp;
+    nx_superblock_t nx_copy;
     int fd, error;
     struct stat st;
 
-    fd = open(image_path, O_RDONLY);
+    fd = open(image_path, write_image ? O_RDWR : O_RDONLY);
     assert(fd >= 0);
     fstat(fd, &st);
-    synthetic_buffer_size = st.st_size;
-    synthetic_buffer = malloc(synthetic_buffer_size);
-    assert(synthetic_buffer != NULL);
-    ssize_t n = read(fd, synthetic_buffer, synthetic_buffer_size);
-    assert(n == (ssize_t)synthetic_buffer_size);
-    close(fd);
+    test_file_size = (uint64_t)st.st_size;
+    if (write_image) {
+        test_fd = fd;
+        synthetic_buffer = NULL;
+        synthetic_buffer_size = 0;
+    } else {
+        synthetic_buffer_size = st.st_size;
+        synthetic_buffer = malloc(synthetic_buffer_size);
+        assert(synthetic_buffer != NULL);
+        ssize_t n = read(fd, synthetic_buffer, synthetic_buffer_size);
+        assert(n == (ssize_t)synthetic_buffer_size);
+        close(fd);
+    }
 
     memset(&amp, 0, sizeof(amp));
-    nx_superblock_t *nx = (nx_superblock_t *)synthetic_buffer;
-    amp.am_block_size = le32toh(nx->nx_block_size);
-    amp.am_desc_blocks = le32toh(nx->nx_xp_desc_blocks);
-    memcpy(&amp.am_nx, nx, sizeof(*nx));
+    amp.am_block_size = 4096;
+    error = apfs_bread(&amp, 0, &bp);
+    assert(error == 0);
+    memcpy(&nx_copy, bp->b_data, sizeof(nx_copy));
+    brelse(bp, 0);
+    amp.am_block_size = le32toh(nx_copy.nx_block_size);
+    amp.am_desc_blocks = le32toh(nx_copy.nx_xp_desc_blocks);
+    memcpy(&amp.am_nx, &nx_copy, sizeof(amp.am_nx));
     apfs_resv_init(&amp);
 
     error = apfs_select_checkpoint(&amp);
@@ -6414,6 +6428,10 @@ test_vn_open_and_vop_create_semantics(const char *image_path)
     assert(error == 0);
 
     apfs_resv_destroy(&amp);
+    if (write_image) {
+        close(test_fd);
+        test_fd = -1;
+    }
     free(synthetic_buffer);
     synthetic_buffer = NULL;
     synthetic_buffer_size = 0;
@@ -6678,6 +6696,13 @@ main(int argc, char **argv)
     struct apfsmount amp;
     int error;
 
+    if (argc == 3 && strcmp(argv[1], "--write-image") == 0) {
+        printf("=== Writing APFS image %s ===\n", argv[2]);
+        test_vn_open_and_vop_create_semantics(argv[2], true);
+        printf("PASS: Direct APFS image write completed on %s\n", argv[2]);
+        return 0;
+    }
+
     if (argc > 1) {
         printf("=== Testing Space Manager on %s ===\n", argv[1]);
         error = init_mount(argv[1], &amp);
@@ -6697,7 +6722,7 @@ main(int argc, char **argv)
         printf("PASS: Space Manager successfully validated on %s\n", argv[1]);
 
         printf("=== Testing File Creation on %s ===\n", argv[1]);
-        test_vn_open_and_vop_create_semantics(argv[1]);
+        test_vn_open_and_vop_create_semantics(argv[1], false);
         printf("PASS: File Creation successfully validated on %s\n", argv[1]);
         return 0;
     }
@@ -6931,7 +6956,7 @@ main(int argc, char **argv)
         if (access(test_images[i], F_OK) != 0)
             continue;
         printf("\n--- Test Case: VOP_CREATE and vn_open Semantics (%s) ---\n", test_images[i]);
-        test_vn_open_and_vop_create_semantics(test_images[i]);
+        test_vn_open_and_vop_create_semantics(test_images[i], false);
         printf("PASS: VOP_CREATE file creation and directory entry insertion verified\n");
     }
 

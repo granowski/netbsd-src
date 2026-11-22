@@ -319,17 +319,27 @@ apfs_vop_create(void *v)
 	memcpy(name_buf, cnp->cn_nameptr, cnp->cn_namelen);
 	name_buf[cnp->cn_namelen] = '\0';
 
+	APFS_TRACE("vop_create begin dir=0x%llx name=%s\n",
+	    (unsigned long long)dnode->a_oid, name_buf);
 	error = apfs_create_file(amp, dnode->a_oid, name_buf, vap->va_mode,
 	    vap->va_uid, vap->va_gid, &new_ino_oid);
-	if (error != 0)
+	if (error != 0) {
+		APFS_TRACE("vop_create failed name=%s error=%d\n", name_buf,
+		    error);
 		return error;
+	}
 
 	ino_t ino = (ino_t)new_ino_oid;
 	error = vcache_get(dvp->v_mount, &ino, sizeof(ino), vpp);
-	if (error != 0)
+	if (error != 0) {
+		APFS_TRACE("vop_create vcache_get inode=0x%llx error=%d\n",
+		    (unsigned long long)ino, error);
 		return error;
+	}
 
 	VOP_UNLOCK(*vpp);
+	APFS_TRACE("vop_create complete inode=0x%llx\n",
+	    (unsigned long long)ino);
 	return 0;
 }
 
@@ -576,9 +586,14 @@ apfs_vop_write(void *v)
 	if (ioflag & IO_APPEND)
 		uio->uio_offset = apnode->a_ino.uncompressed_size;
 
+	APFS_TRACE("vop_write begin inode=0x%llx offset=%lld resid=%zu\n",
+	    (unsigned long long)apnode->a_oid, (long long)uio->uio_offset,
+	    uio->uio_resid);
 	error = apfs_tx_begin(amp, &tx);
-	if (error != 0)
+	if (error != 0) {
+		APFS_TRACE("vop_write tx_begin error=%d\n", error);
 		return error;
+	}
 
 	oid_t root_tree_oid = le64toh(amp->am_sb.apfs_root_tree_oid);
 	oid_t omap_oid = le64toh(amp->am_sb.apfs_omap_oid);
@@ -614,8 +629,11 @@ apfs_vop_write(void *v)
 		}
 
 		error = apfs_tx_alloc_block(&tx, 1, &paddr);
-		if (error != 0)
+		if (error != 0) {
+			APFS_TRACE("vop_write alloc inode=0x%llx error=%d\n",
+			    (unsigned long long)apnode->a_oid, error);
 			break;
+		}
 
 		error = apfs_getblk(amp, paddr, &bp);
 		if (error != 0)
@@ -684,12 +702,17 @@ apfs_vop_write(void *v)
 	}
 
 	error = apfs_tx_commit(&tx);
-	if (error != 0)
+	if (error != 0) {
+		APFS_TRACE("vop_write tx_commit error=%d\n", error);
 		return error;
+	}
 
 	uvm_vnp_setsize(vp, apnode->a_ino.uncompressed_size);
 	vp->v_size = apnode->a_ino.uncompressed_size;
 
+	APFS_TRACE("vop_write complete inode=0x%llx size=%llu\n",
+	    (unsigned long long)apnode->a_oid,
+	    (unsigned long long)apnode->a_ino.uncompressed_size);
 	return 0;
 }
 

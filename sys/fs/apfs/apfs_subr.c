@@ -100,7 +100,13 @@ apfs_bread(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
 		return EOVERFLOW;
 	blkno = (uint64_t)paddr * sectors_per_block;
 
-	return bread(amp->am_devvp, (daddr_t)blkno, amp->am_block_size, 0, bpp);
+	APFS_TRACE("bread wait paddr=%lld blkno=%lld\n", (long long)paddr,
+	    (long long)blkno);
+	int error = bread(amp->am_devvp, (daddr_t)blkno, amp->am_block_size,
+	    0, bpp);
+	APFS_TRACE("bread return paddr=%lld error=%d\n", (long long)paddr,
+	    error);
+	return error;
 }
 
 int
@@ -118,7 +124,11 @@ apfs_getblk(struct apfsmount *amp, apfs_paddr_t paddr, struct buf **bpp)
 		return EOVERFLOW;
 	blkno = (uint64_t)paddr * sectors_per_block;
 
+	APFS_TRACE("getblk wait paddr=%lld blkno=%lld\n", (long long)paddr,
+	    (long long)blkno);
 	bp = getblk(amp->am_devvp, (daddr_t)blkno, amp->am_block_size, 0, 0);
+	APFS_TRACE("getblk return paddr=%lld result=%s\n", (long long)paddr,
+	    bp == NULL ? "null" : "buffer");
 	if (bp == NULL)
 		return ENOMEM;
 
@@ -142,7 +152,12 @@ apfs_bwrite(struct apfsmount *amp, apfs_paddr_t paddr, struct buf *bp)
 
 	bp->b_blkno = (daddr_t)blkno;
 	bp->b_bcount = amp->am_block_size;
-	return bwrite(bp);
+	APFS_TRACE("bwrite begin paddr=%lld blkno=%lld\n", (long long)paddr,
+	    (long long)blkno);
+	int error = bwrite(bp);
+	APFS_TRACE("bwrite return paddr=%lld error=%d\n", (long long)paddr,
+	    error);
+	return error;
 }
 
 int
@@ -808,7 +823,12 @@ apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
 	if (!apfs_spaceman_paddr_valid(amp, spaceman_paddr))
 		return EINVAL;
 
+	APFS_TRACE("resv_alloc xid=0x%llx read spaceman paddr=%lld\n",
+	    (unsigned long long)(tx != NULL ? tx->rt_tx_id : 0),
+	    (long long)spaceman_paddr);
 	error = apfs_bread(amp, spaceman_paddr, &smbp);
+	APFS_TRACE("resv_alloc spaceman bread paddr=%lld error=%d\n",
+	    (long long)spaceman_paddr, error);
 	if (error != 0)
 		return error;
 
@@ -855,7 +875,11 @@ apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
 
 	cib_addrs = (const apfs_paddr_t *)((const uint8_t *)sm + addr_offset);
 
+	APFS_TRACE("resv_alloc wait rp_lock xid=0x%llx\n",
+	    (unsigned long long)(tx != NULL ? tx->rt_tx_id : 0));
 	mutex_enter(&amp->am_resv_pool.rp_lock);
+	APFS_TRACE("resv_alloc acquired rp_lock xid=0x%llx\n",
+	    (unsigned long long)(tx != NULL ? tx->rt_tx_id : 0));
 
 	uint64_t start_chunk = amp->am_resv_pool.rp_last_chunk % chunk_count;
 	uint32_t start_bit = amp->am_resv_pool.rp_last_bit;
@@ -874,7 +898,11 @@ apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
 		if (!apfs_spaceman_paddr_valid(amp, (uint64_t)cib_paddr))
 			continue;
 
+		APFS_TRACE("resv_alloc read CIB chunk=%llu paddr=%lld\n",
+		    (unsigned long long)chunk_idx, (long long)cib_paddr);
 		error = apfs_bread(amp, cib_paddr, &cibp);
+		APFS_TRACE("resv_alloc CIB bread paddr=%lld error=%d\n",
+		    (long long)cib_paddr, error);
 		if (error != 0)
 			continue;
 
@@ -900,7 +928,11 @@ apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
 			continue;
 		}
 
+		APFS_TRACE("resv_alloc read bitmap chunk=%llu paddr=%lld\n",
+		    (unsigned long long)chunk_idx, (long long)bitmap_paddr);
 		error = apfs_bread(amp, bitmap_paddr, &bp);
+		APFS_TRACE("resv_alloc bitmap bread paddr=%lld error=%d\n",
+		    (long long)bitmap_paddr, error);
 		if (error != 0) {
 			brelse(cibp, 0);
 			cibp = NULL;
@@ -987,6 +1019,7 @@ apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
 	smbp = NULL;
 
 	if (!found) {
+		APFS_TRACE("resv_alloc no block found; release rp_lock\n");
 		mutex_exit(&amp->am_resv_pool.rp_lock);
 		return ENOSPC;
 	}
@@ -1012,6 +1045,8 @@ apfs_resv_alloc(struct apfsmount *amp, apfs_resv_tx_t *tx, uint64_t count,
 	mutex_exit(&amp->am_resv_pool.rp_lock);
 
 	*paddrp = (apfs_paddr_t)found_paddr;
+	APFS_TRACE("resv_alloc success paddr=%llu count=%llu\n",
+	    (unsigned long long)found_paddr, (unsigned long long)count);
 	return 0;
 }
 
@@ -3563,10 +3598,13 @@ apfs_tx_begin(struct apfsmount *amp, apfs_tx_t *tx)
 	if (amp == NULL || tx == NULL)
 		return EINVAL;
 
+	APFS_TRACE("tx_begin wait am_lock amp=%p\n", amp);
 	mutex_enter(&amp->am_lock);
 	memset(tx, 0, sizeof(*tx));
 	tx->tx_amp = amp;
 	tx->tx_xid = amp->am_checkpoint_xid + 1;
+	APFS_TRACE("tx_begin acquired am_lock xid=0x%llx\n",
+	    (unsigned long long)tx->tx_xid);
 	tx->tx_state = APFS_TX_STATE_ACTIVE;
 	memcpy(&tx->tx_sb_snapshot, &amp->am_sb, sizeof(tx->tx_sb_snapshot));
 	tx->tx_resv.rt_tx_id = tx->tx_xid;
@@ -3627,10 +3665,18 @@ apfs_free_queue_add(apfs_tx_t *tx, apfs_paddr_t paddr, uint64_t count)
 int
 apfs_tx_alloc_block(apfs_tx_t *tx, uint64_t count, apfs_paddr_t *paddrp)
 {
+	int error;
+
 	if (tx == NULL || tx->tx_amp == NULL || tx->tx_state != APFS_TX_STATE_ACTIVE)
 		return EINVAL;
 
-	return apfs_resv_alloc(tx->tx_amp, &tx->tx_resv, count, paddrp);
+	APFS_TRACE("tx_alloc xid=0x%llx count=%llu begin\n",
+	    (unsigned long long)tx->tx_xid, (unsigned long long)count);
+	error = apfs_resv_alloc(tx->tx_amp, &tx->tx_resv, count, paddrp);
+	APFS_TRACE("tx_alloc xid=0x%llx result=%d paddr=%lld\n",
+	    (unsigned long long)tx->tx_xid, error,
+	    error == 0 ? (long long)*paddrp : -1LL);
+	return error;
 }
 
 int
@@ -3684,12 +3730,16 @@ apfs_tx_abort(apfs_tx_t *tx)
 		memcpy(&tx->tx_amp->am_sb, &tx->tx_sb_snapshot,
 		    sizeof(tx->tx_sb_snapshot));
 
+	APFS_TRACE("tx_abort xid=0x%llx\n", (unsigned long long)tx->tx_xid);
 	tx->tx_map_count = 0;
 	tx->tx_omap_count = 0;
 	tx->tx_free_count = 0;
 	tx->tx_state = APFS_TX_STATE_ABORTED;
-	if (tx->tx_amp != NULL)
+	if (tx->tx_amp != NULL) {
+		APFS_TRACE("tx_abort xid=0x%llx release am_lock\n",
+		    (unsigned long long)tx->tx_xid);
 		mutex_exit(&tx->tx_amp->am_lock);
+	}
 }
 
 #define APFS_TX_UPDATE_MAX_CHUNKS 64
@@ -3710,6 +3760,9 @@ apfs_spaceman_tx_update(apfs_tx_t *tx)
 		return EINVAL;
 
 	amp = tx->tx_amp;
+	APFS_TRACE("spaceman_update xid=0x%llx begin allocations=%llu frees=%u\n",
+	    (unsigned long long)tx->tx_xid,
+	    (unsigned long long)tx->tx_resv.rt_count, tx->tx_free_count);
 	if (LIST_EMPTY(&tx->tx_resv.rt_entries) && tx->tx_free_count == 0)
 		return 0;
 
@@ -4088,6 +4141,8 @@ out:
 		kmem_free(cibs, sizeof(*cibs) * APFS_TX_UPDATE_MAX_CIBS);
 	}
 
+	APFS_TRACE("spaceman_update xid=0x%llx complete error=%d chunks=%u cibs=%u\n",
+	    (unsigned long long)tx->tx_xid, error, num_chunks, num_cibs);
 	return error;
 }
 
@@ -4164,7 +4219,11 @@ apfs_tx_commit(apfs_tx_t *tx)
 		return EINVAL;
 	}
 
+	APFS_TRACE("tx_commit xid=0x%llx stage superblock begin\n",
+	    (unsigned long long)tx->tx_xid);
 	error = apfs_tx_stage_superblock(tx);
+	APFS_TRACE("tx_commit xid=0x%llx stage superblock error=%d\n",
+	    (unsigned long long)tx->tx_xid, error);
 	if (error != 0) {
 		apfs_tx_abort(tx);
 		return error;
@@ -4172,6 +4231,8 @@ apfs_tx_commit(apfs_tx_t *tx)
 
 	/* Phase 1: Update Space Manager, CIBs, and Bitmaps if any allocations made */
 	error = apfs_spaceman_tx_update(tx);
+	APFS_TRACE("tx_commit xid=0x%llx spaceman_update error=%d\n",
+	    (unsigned long long)tx->tx_xid, error);
 	if (error != 0) {
 		apfs_tx_abort(tx);
 		return error;
@@ -4229,7 +4290,11 @@ apfs_tx_commit(apfs_tx_t *tx)
 
 		apfs_obj_set_cksum(amp, map);
 
+		APFS_TRACE("tx_commit xid=0x%llx checkpoint map write slot=%u begin\n",
+		    (unsigned long long)tx->tx_xid, slot);
 		error = apfs_bwrite(amp, map_paddr, bp);
+		APFS_TRACE("tx_commit xid=0x%llx checkpoint map write slot=%u error=%d\n",
+		    (unsigned long long)tx->tx_xid, slot, error);
 		if (error != 0) {
 			apfs_tx_abort(tx);
 			return error;
@@ -4256,7 +4321,11 @@ apfs_tx_commit(apfs_tx_t *tx)
 	new_nx->nx_xp_desc_len = htole32(new_desc_len);
 	apfs_obj_set_cksum(amp, new_nx);
 
+	APFS_TRACE("tx_commit xid=0x%llx container superblock write slot=%u begin\n",
+	    (unsigned long long)tx->tx_xid, sb_slot);
 	error = apfs_bwrite(amp, sb_paddr, bp);
+	APFS_TRACE("tx_commit xid=0x%llx container superblock write slot=%u error=%d\n",
+	    (unsigned long long)tx->tx_xid, sb_slot, error);
 	if (error != 0) {
 		apfs_tx_abort(tx);
 		return error;
@@ -4267,7 +4336,11 @@ apfs_tx_commit(apfs_tx_t *tx)
 	memcpy(&amp->am_nx, new_nx, sizeof(amp->am_nx));
 
 	/* Clean up transaction handle and release from global reservation pool */
+	APFS_TRACE("tx_commit xid=0x%llx wait rp_lock cleanup\n",
+	    (unsigned long long)tx->tx_xid);
 	mutex_enter(&amp->am_resv_pool.rp_lock);
+	APFS_TRACE("tx_commit xid=0x%llx acquired rp_lock cleanup\n",
+	    (unsigned long long)tx->tx_xid);
 	apfs_resv_entry_t *re, *tmp;
 	re = LIST_FIRST(&tx->tx_resv.rt_entries);
 	while (re != NULL) {
@@ -4294,6 +4367,8 @@ apfs_tx_commit(apfs_tx_t *tx)
 	tx->tx_resv.rt_count = 0;
 	mutex_exit(&amp->am_resv_pool.rp_lock);
 	tx->tx_state = APFS_TX_STATE_COMMITTED;
+	APFS_TRACE("tx_commit xid=0x%llx complete; release am_lock\n",
+	    (unsigned long long)tx->tx_xid);
 	mutex_exit(&amp->am_lock);
 
 	return 0;
@@ -4325,6 +4400,9 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	error = apfs_tx_begin(amp, &tx);
 	if (error != 0)
 		return error;
+	APFS_TRACE("create_file xid=0x%llx parent=0x%llx name=%s begin\n",
+	    (unsigned long long)tx.tx_xid, (unsigned long long)parent_oid,
+	    name);
 
 	new_ino_oid = le64toh(amp->am_sb.apfs_next_obj_id);
 	amp->am_sb.apfs_next_obj_id = htole64(new_ino_oid + 1);
@@ -4395,6 +4473,8 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 
 	if (new_oidp != NULL)
 		*new_oidp = new_ino_oid;
+	APFS_TRACE("create_file complete inode=0x%llx\n",
+	    (unsigned long long)new_ino_oid);
 
 	return 0;
 }
