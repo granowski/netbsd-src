@@ -1,6 +1,6 @@
 .\"	$NetBSD$
 .\"
-.Dd October 18, 2026
+.Dd November 21, 2026
 .Dt NEWFS_APFS 8
 .Os
 .Sh NAME
@@ -13,8 +13,13 @@
 .Sh DESCRIPTION
 The
 .Nm
-utility creates an APFS container on the specified
+utility destructively creates an APFS container with one initial volume on
+the specified
 .Ar device .
+The target may be a regular file, block device, or character device with a
+reported media size. Existing data on the target will no longer be accessible
+as a filesystem after formatting; the utility does not securely erase the
+entire target.
 .Pp
 The following options are available:
 .Bl -tag -width indent
@@ -22,6 +27,17 @@ The following options are available:
 Specify the name of the initial APFS volume.
 If not specified, "Untitled" is used.
 .El
+.Pp
+This implementation creates a 4 KiB-block, single-volume APFS container.
+The volume is unencrypted and unsealed. The target size must be a multiple of
+4096 bytes and at least 1 MiB. Multi-volume, encrypted, sealed, and other
+block-size configurations are not supported. The maximum size is limited by
+the Space Manager CIB address table.
+.Pp
+Only run
+.Nm
+on a target whose contents may be destroyed. An I/O error can leave the target
+unmountable.
 .Sh SEE ALSO
 .Xr mount_apfs 8 ,
 .Xr newfs 8

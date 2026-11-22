@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>APFS Space Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>The Space Manager</h1>
+    <nav aria-label="Guide pages">
+      <ul>
+        <li><a href="index.html">Guide home</a></li>
+        <li><a href="bitmap.html">Bitmaps and reservations</a></li>
+        <li><a href="operations.html">Filesystem operations</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <h2>What it tracks</h2>
+    <p>The Space Manager is container-level metadata for physical block
+      availability. File ownership lives in filesystem metadata such as
+      extent records; a bitmap only says whether a container block is
+      allocated.</p>
+    <h2>Three layers</h2>
+    <ol>
+      <li><strong>Space Manager object:</strong> device geometry, block and
+        chunk counts, blocks per chunk, chunks per CIB, CIB address table,
+        free count, reserve information, and free-queue fields.</li>
+      <li><strong>Chunk Information Block (CIB):</strong> one entry per chunk
+        with its address, valid block count, free count, XID, and bitmap
+        address.</li>
+      <li><strong>Chunk bitmap:</strong> one allocation bit per physical block
+        in that chunk.</li>
+    </ol>
+    <pre>Space Manager object
+  +-- CIB address table
+       +-- CIB for a group of chunks
+            +-- chunk 0: block range, free count, bitmap address
+            +-- chunk 1: block range, free count, bitmap address
+            +-- ...</pre>
+    <h2>Validation before writes</h2>
+    <p><code>apfs_validate_spaceman()</code> checks the Space Manager object's
+      checksum, type, and geometry; checks CIB objects and chunk entries;
+      reads bitmaps; and compares bitmap-derived counts to CIB and device
+      free counts. It also checks exclusion ranges used to keep allocator
+      candidates away from reserved metadata.</p>
+    <p>A chunk with no bitmap address is treated as wholly free only if its
+      CIB free count equals the number of valid blocks in that chunk. The
+      final chunk can be shorter than the configured chunk size.</p>
+    <h2>Supported scope</h2>
+    <p>The current validator rejects CAB and secondary-device layouts. It
+      validates the structures it understands and refuses read-write use if
+      Space Manager validation fails; it is not a general APFS compatibility
+      validator.</p>
+    <p>See the <a href="../spaceman-and-filesystem.md">full implementation
+      guide</a> for code references and the relationship to transactions.</p>
+  </main>
+  <footer><a href="index.html">Back to guide home</a></footer>
+</body>
+</html>

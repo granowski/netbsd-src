@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetBSD APFS implementation guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>NetBSD APFS implementation guide</h1>
+    <p>A browser-friendly introduction to how filesystem requests, physical
+      block allocation, and APFS metadata fit together in this implementation.</p>
+    <nav aria-label="Guide pages">
+      <ul>
+        <li><a href="spaceman.html">Space Manager</a></li>
+        <li><a href="bitmap.html">Bitmaps and reservations</a></li>
+        <li><a href="operations.html">Filesystem operations</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <h2>Start with the model</h2>
+    <p>The Space Manager accounts for physical container blocks. It does not
+      identify file owners. Filesystem metadata—especially extent records—maps
+      file logical offsets to physical blocks, while the Space Manager tracks
+      whether those blocks may be allocated.</p>
+    <pre aria-label="How a filesystem request reaches disk metadata">filesystem operation
+  -> APFS transaction
+  -> block reservations
+  -> copy-on-write file and allocator metadata
+  -> checkpoint map and container superblock publication</pre>
+    <h2>Topics</h2>
+    <table>
+      <thead><tr><th>Page</th><th>What it covers</th></tr></thead>
+      <tbody>
+        <tr><td><a href="spaceman.html">Space Manager</a></td>
+          <td>Container geometry, chunks, CIBs, validation, and safe scope.</td></tr>
+        <tr><td><a href="bitmap.html">Bitmaps and reservations</a></td>
+          <td>Bit polarity, search, in-memory reservations, and COW updates.</td></tr>
+        <tr><td><a href="operations.html">Filesystem operations</a></td>
+          <td>What create, write, replace, and remove allocate and publish.</td></tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Development status:</strong> these pages describe
+      current source code, not a complete APFS specification or a guarantee of
+      production-ready behavior. Protect test data and use a disk image for
+      experiments.</p>
+  </main>
+  <footer>
+    <p>Source documentation:
+      <a href="../spaceman-and-filesystem.md">Space Manager and filesystem guide</a>,
+      <a href="../write-path.md">create and write paths</a>,
+      <a href="../locking-and-stalls.md">locking and stall diagnosis</a>.</p>
+  </footer>
+</body>
+</html>
