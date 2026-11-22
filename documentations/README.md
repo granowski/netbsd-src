@@ -4,6 +4,8 @@ These pages describe the current NetBSD APFS implementation and provide a
 workflow for investigating a stalled create or write. They are implementation
 notes, not an APFS format specification.
 
+- [Current feature coverage](features.md): implemented code paths, current
+  limitations, and features that are not supported.
 - [Create and write paths](write-path.md): VOP entry points, transaction flow,
   copy-on-write metadata, and the difference between creating an empty file
   and writing file data.

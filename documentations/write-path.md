@@ -43,6 +43,23 @@ In the current implementation, `apfs_tx_begin()` serializes mutations with
 reservation. Commit turns those reservations into copy-on-write bitmap/CIB/
 Space Manager objects and publishes their mappings in the checkpoint ring.
 
+Directory-record keys store the name length including the terminating NUL.
+Lookup and readdir use that encoded length, so create, remove, symlink, and
+rename paths must encode `strlen(name) + 1` even though the hash is computed
+over the name bytes without the terminator.
+
+Earlier versions of this implementation encoded the directory-record length
+without the NUL. Records already written by those builds will not match normal
+lookup and are rejected by readdir; correcting the write paths does not repair
+existing on-disk records. Preserve an offline copy of an affected volume before
+attempting recovery, and avoid further read-write mounts in the meantime.
+
+Checkpoint selection validates every mapping entry, including the object's
+storage class. Checkpoint maps may contain both physical and ephemeral
+objects; rejecting a physical OMap mapping invalidates the entire checkpoint.
+An earlier validator accepted only ephemeral entries, which could make mount
+fall back to the prior checkpoint and hide an otherwise committed change.
+
 ## Non-empty file write
 
 Writing data follows `apfs_vop_write()`. It allocates a data block, writes it,

@@ -318,8 +318,10 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 			uint32_t storage = le32toh(entry->cpm_type) &
 			    OBJ_STORAGE_MASK;
 			uint64_t blocks;
+			bool valid_storage = storage == OBJ_EPHEMERAL ||
+			    storage == OBJ_PHYSICAL;
 
-			if (oid == 0 || size == 0 || storage != OBJ_EPHEMERAL ||
+			if (oid == 0 || size == 0 || !valid_storage ||
 			    mapping_paddr >= block_count) {
 				printf("apfs_checkpoint: XID 0x%llx map block %llu "
 				    "entry %u invalid (type 0x%x oid 0x%llx "
@@ -362,6 +364,7 @@ apfs_checkpoint_maps_valid(struct apfsmount *amp, const nx_superblock_t *nx,
 			const obj_phys_t *obj = (const obj_phys_t *)mbp->b_data;
 			if (le64toh(obj->o_oid) != oid || le64toh(obj->o_xid) > xid ||
 			    le64toh(obj->o_xid) == 0 ||
+			    (le32toh(obj->o_type) & OBJ_STORAGE_MASK) != storage ||
 			    !apfs_checksum_valid(amp, obj)) {
 				printf("apfs_checkpoint: XID 0x%llx ephemeral block %llu "
 				    "invalid (oid 0x%llx xid 0x%llx type 0x%x, expected oid 0x%llx xid <= 0x%llx)\n",
@@ -4444,7 +4447,7 @@ apfs_create_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
-	    (name_len & DREC_NLEN_MASK));
+	    ((name_len + 1) & DREC_NLEN_MASK));
 	memcpy(drec_key->name, name, name_len);
 	drec_key->name[name_len] = '\0';
 
@@ -4771,7 +4774,7 @@ apfs_create_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
-	    (name_len & DREC_NLEN_MASK));
+	    ((name_len + 1) & DREC_NLEN_MASK));
 	memcpy(drec_key->name, name, name_len);
 	drec_key->name[name_len] = '\0';
 
@@ -4870,7 +4873,7 @@ apfs_remove_dir(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
-	    (name_len & DREC_NLEN_MASK));
+	    ((name_len + 1) & DREC_NLEN_MASK));
 	memcpy(drec_key->name, name, name_len);
 	drec_key->name[name_len] = '\0';
 
@@ -4935,7 +4938,7 @@ apfs_remove_file(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
-	    (name_len & DREC_NLEN_MASK));
+	    ((name_len + 1) & DREC_NLEN_MASK));
 	memcpy(drec_key->name, name, name_len);
 	drec_key->name[name_len] = '\0';
 
@@ -5120,7 +5123,7 @@ apfs_create_symlink(struct apfsmount *amp, oid_t parent_oid, const char *name,
 	drec_key->obj_id_and_type = htole64((parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	drec_key->name_len_and_hash = htole32((name_hash << DREC_HASH_SHIFT) |
-	    (name_len & DREC_NLEN_MASK));
+	    ((name_len + 1) & DREC_NLEN_MASK));
 	memcpy(drec_key->name, name, name_len);
 	drec_key->name[name_len] = '\0';
 
@@ -5202,7 +5205,7 @@ apfs_rename_file(struct apfsmount *amp, oid_t from_parent_oid, const char *from_
 	from_drec_key->obj_id_and_type = htole64((from_parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	from_drec_key->name_len_and_hash = htole32((from_hash << DREC_HASH_SHIFT) |
-	    (from_len & DREC_NLEN_MASK));
+	    ((from_len + 1) & DREC_NLEN_MASK));
 	memcpy(from_drec_key->name, from_name, from_len);
 	from_drec_key->name[from_len] = '\0';
 
@@ -5220,7 +5223,7 @@ apfs_rename_file(struct apfsmount *amp, oid_t from_parent_oid, const char *from_
 	to_drec_key->obj_id_and_type = htole64((to_parent_oid & OBJ_ID_MASK) |
 	    ((uint64_t)APFS_TYPE_DIR_REC << OBJ_TYPE_SHIFT));
 	to_drec_key->name_len_and_hash = htole32((to_hash << DREC_HASH_SHIFT) |
-	    (to_len & DREC_NLEN_MASK));
+	    ((to_len + 1) & DREC_NLEN_MASK));
 	memcpy(to_drec_key->name, to_name, to_len);
 	to_drec_key->name[to_len] = '\0';
 
